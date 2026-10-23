@@ -1,0 +1,96 @@
+"""実 PostgreSQL(warilink_test)を使う API テスト。DB が無い環境ではスキップではなく失敗させる。"""
+
+import os
+import uuid
+
+os.environ.setdefault(
+    "WARILINK_DATABASE_URL", "postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_test"
+)
+os.environ["WARILINK_ENVIRONMENT"] = "test"
+
+import pytest  # noqa: E402
+from alembic.config import Config  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+from alembic import command  # noqa: E402
+from app.core.db import Base, get_engine  # noqa: E402
+from app.main import app  # noqa: E402
+
+API = "/api/v1"
+HERE = os.path.dirname(__file__)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _migrate():
+    cfg = Config(os.path.join(HERE, "..", "..", "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(HERE, "..", "..", "alembic"))
+    cfg.set_main_option("sqlalchemy.url", os.environ["WARILINK_DATABASE_URL"])
+    command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    yield
+    names = ", ".join(t.name for t in reversed(Base.metadata.sorted_tables))
+    with get_engine().begin() as conn:
+        conn.execute(text(f"TRUNCATE {names} CASCADE"))
+
+
+class User:
+    """1人の利用者(独立した Cookie を持つブラウザ)を表す。"""
+
+    def __init__(self) -> None:
+        self.c = TestClient(app, headers={"X-WariLink-CSRF": "1"})
+        r = self.c.post(f"{API}/identity/guest")
+        assert r.status_code == 201, r.text
+
+    def req(self, method: str, path: str, *, key: str | None = None, **kw):
+        headers = kw.pop("headers", {})
+        if method in ("POST",) and "idempotency-key" not in {k.lower() for k in headers}:
+            headers["Idempotency-Key"] = key or str(uuid.uuid4())
+        return self.c.request(method, f"{API}{path}", headers=headers, **kw)
+
+    def get(self, path, **kw):
+        return self.req("GET", path, **kw)
+
+    def post(self, path, **kw):
+        return self.req("POST", path, **kw)
+
+    def put(self, path, **kw):
+        return self.req("PUT", path, **kw)
+
+    def delete(self, path, **kw):
+        return self.req("DELETE", path, **kw)
+
+
+@pytest.fixture
+def user_factory():
+    return User
+
+
+def make_group(owner: User, names=("Bさん", "Cさん", "Dさん"), title="旅行"):
+    r = owner.post("/groups", json={"title": title, "my_name": "Aさん", "other_member_names": list(names)})
+    assert r.status_code == 201, r.text
+    g = r.json()
+    return g, {m["display_name"]: m["id"] for m in g["members"]}
+
+
+def join_as(user: User, owner: User, public_id: str, claim_name: str):
+    inv = owner.post(f"/groups/{public_id}/invites", json={}).json()
+    preview = user.get(f"/invites/{inv['token']}").json()
+    mid = next(m["id"] for m in preview["unclaimed_members"] if m["display_name"] == claim_name)
+    r = user.post(f"/invites/{inv['token']}/join", json={"claim_member_id": mid})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def equal_expense(payer_id: str, amount: int, member_ids, title="ランチ"):
+    return {
+        "title": title,
+        "amount_minor": amount,
+        "payers": [{"member_id": payer_id, "amount_minor": amount}],
+        "split": {"mode": "equal", "shares": [{"member_id": m, "value": 1} for m in member_ids]},
+    }

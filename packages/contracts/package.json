@@ -1,0 +1,14 @@
+{
+  "name": "@warilink/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "types": "src/index.ts",
+  "main": "src/index.ts",
+  "scripts": {
+    "gen": "../../.venv/bin/python ../../scripts/export_openapi.py openapi.json && openapi-typescript openapi.json -o src/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

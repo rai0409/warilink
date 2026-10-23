@@ -1,0 +1,100 @@
+/* 仮のシンプルなスタイル。本デザインは後続フェーズで差し替える。 */
+:root {
+  --bg: #f6f7f9;
+  --fg: #1d2330;
+  --muted: #535c6c;
+  --card: #fff;
+  --line: #dde1e8;
+  --accent: #1a5dcc;
+  --warn-bg: #fff4e5;
+  --warn: #8a4b00;
+  --err: #b42318;
+  --ok: #067647;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+}
+main { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; margin: 8px 0 16px; }
+h2 { font-size: 1.1rem; margin: 0 0 12px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.banner { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: .9rem; margin-bottom: 16px; }
+.muted { color: var(--muted); font-size: .9rem; }
+.error { color: var(--err); }
+.ok { color: var(--ok); }
+label { display: block; font-size: .9rem; margin: 8px 0 4px; }
+input, select { width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+button { min-height: 44px; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+button.secondary { background: #fff; color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row > * { flex: 1 1 auto; }
+.list { list-style: none; padding: 0; margin: 0; }
+.list li { display: flex; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.list li:last-child { border-bottom: 0; }
+.amount { font-variant-numeric: tabular-nums; font-weight: 600; }
+.chip { display: inline-block; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: .85rem; }
+.chip.exact { border-color: var(--ok); color: var(--ok); }
+.chip.reduced { border-color: var(--warn); color: var(--warn); }
+.toggle { min-height: 44px; border: 1px solid var(--line); background: #fff; color: var(--fg); border-radius: 999px; padding: 6px 14px; }
+.toggle[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { text-align: right; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; }
+
+/* ---- Phase 2 の簡易スタイル(本デザインは後で差し替え) ---- */
+a { color: var(--accent); }
+a.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 16px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; border: 1px solid var(--accent); }
+a.button.secondary { background: #fff; color: var(--accent); }
+h3 { font-size: 1rem; margin: 20px 0 8px; }
+.big { font-size: 1.5rem; margin: 4px 0 8px; }
+.tabs { display: flex; gap: 4px; overflow-x: auto; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+.tabs a { flex: 0 0 auto; display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; color: var(--muted); text-decoration: none; border-bottom: 3px solid transparent; }
+.tabs a[aria-current="page"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+fieldset { border: 0; padding: 0; margin: 12px 0 0; min-width: 0; }
+legend { font-size: .9rem; margin-bottom: 4px; padding: 0; }
+fieldset.item { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px 4px; margin: 0 0 12px; }
+fieldset.item legend { font-weight: 600; padding: 0 4px; }
+fieldset.item.has-issue { border: 2px solid var(--err); }
+.item-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0 8px; }
+.inline-field { margin-top: 4px; }
+.check { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; }
+.check input { width: 22px; min-height: 22px; height: 22px; }
+.stepper { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.stepper > span { flex: 1 1 auto; }
+.stepper button { width: 44px; padding: 0; }
+.stepper output { min-width: 2em; text-align: center; font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; font-size: .8rem; padding: 0 8px; margin-left: 6px; border-radius: 999px; background: #eef1f5; color: var(--muted); border: 1px solid var(--line); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); border-color: #f5c27a; }
+.notice { background: #f0f4ff; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+.notice.warn { background: var(--warn-bg); color: var(--warn); }
+.bulk { position: sticky; bottom: 0; background: #fff; border: 2px solid var(--accent); border-radius: 10px; padding: 8px 12px; margin: 12px 0; z-index: 1; }
+.preview { margin-top: 12px; }
+.issues { padding-left: 1.2em; margin: 8px 0; }
+.actions { margin-top: 12px; }
+.track { display: flex; gap: 4px; list-style: none; padding: 0; margin: 4px 0 0; font-size: .8rem; color: var(--muted); }
+.track li { padding: 0 8px; border-radius: 999px; border: 1px solid var(--line); }
+.track li.done { color: var(--ok); border-color: var(--ok); }
+.list li.transfer { align-items: center; }
+details { margin-top: 8px; }
+summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--accent); }
+.footer { margin: 24px 0; text-align: center; color: var(--muted); font-size: .9rem; }
+@media (max-width: 480px) { table { font-size: .8rem; } }
+
+/* ---- Phase 3: レシート読み取り ---- */
+.file-button { position: relative; overflow: hidden; cursor: pointer; }
+.file-button input { position: absolute; inset: 0; opacity: 0; cursor: pointer; min-height: 0; }
+.file-button:focus-within { outline: 3px solid var(--fg); outline-offset: 2px; }
+.receipt-image { position: relative; max-width: 420px; margin: 8px auto; border: 1px solid var(--line); }
+.receipt-image img { display: block; width: 100%; height: auto; }
+.bbox { position: absolute; border: 2px solid rgba(26, 93, 204, .55); border-radius: 2px; pointer-events: none; }
+.bbox.low { border-color: #c2410c; background: rgba(194, 65, 12, .12); }
+.bbox.focused { border-width: 3px; border-color: #111; background: rgba(255, 220, 0, .25); }
+.badge.review { background: #fff1e6; color: #9a3412; border-color: #f0a875; }
+fieldset.item.needs-review { border-left: 6px solid #c2410c; }
+.review-note { color: #9a3412; font-size: .85rem; margin: 2px 0 6px; }
+.small { font-size: .8rem; }

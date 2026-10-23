@@ -1,0 +1,22 @@
+import type { NextConfig } from "next";
+
+const apiOrigin = process.env.API_ORIGIN ?? "http://localhost:8000";
+
+const nextConfig: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: new URL("../../", import.meta.url).pathname,
+  // API を同一オリジンに見せ、Cookie を SameSite=Lax のまま使う
+  async rewrites() {
+    return [{ source: "/api/v1/:path*", destination: `${apiOrigin}/api/v1/:path*` }];
+  },
+  async headers() {
+    // グループ・招待・精算ページは非公開。検索エンジンに載せない
+    const noindex = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
+    return [
+      { source: "/g/:path*", headers: noindex },
+      { source: "/join/:path*", headers: noindex },
+    ];
+  },
+};
+
+export default nextConfig;

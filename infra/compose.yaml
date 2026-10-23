@@ -1,0 +1,69 @@
+# 既存の他プロジェクトのコンテナと衝突しないよう、プロジェクト名とホスト側ポートを分ける。
+name: warilink
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-warilink}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-warilink-dev-only}
+      POSTGRES_DB: ${POSTGRES_DB:-warilink}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: ../apps/api
+    environment:
+      WARILINK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-warilink}:${POSTGRES_PASSWORD:-warilink-dev-only}@db:5432/${POSTGRES_DB:-warilink}
+      WARILINK_ENVIRONMENT: ${WARILINK_ENVIRONMENT:-development}
+      WARILINK_COOKIE_SECURE: ${WARILINK_COOKIE_SECURE:-false}
+      WARILINK_FEATURE_BANK_PROVIDER: "false"
+      WARILINK_ALLOWED_ORIGINS: '["http://localhost:3000"]'
+      WARILINK_RECEIPT_STORAGE_DIR: /data/receipts
+    volumes:
+      - receipts:/data/receipts
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_ORIGIN: http://api:8000
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  # PaddleOCR ワーカー(`make up-ocr` で起動)。API とはレシート画像のボリュームと DB だけを共有する
+  ocr-worker:
+    profiles: ["ocr"]
+    build:
+      context: ../apps/api
+      dockerfile: ../ocr-worker/Dockerfile
+    environment:
+      WARILINK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-warilink}:${POSTGRES_PASSWORD:-warilink-dev-only}@db:5432/${POSTGRES_DB:-warilink}
+      WARILINK_RECEIPT_STORAGE_DIR: /data/receipts
+      # CPU 数を超えると linux/aarch64 で推論中に異常終了する(PaddleX 既定は 10)
+      WARILINK_OCR_CPU_THREADS: ${WARILINK_OCR_CPU_THREADS:-4}
+    volumes:
+      - receipts:/data/receipts
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:
+  receipts:

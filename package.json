@@ -1,0 +1,12 @@
+{
+  "name": "warilink",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "gen:contracts": "pnpm --filter @warilink/contracts gen",
+    "web:dev": "pnpm --filter @warilink/web dev",
+    "web:build": "pnpm --filter @warilink/web build",
+    "web:typecheck": "pnpm --filter @warilink/web typecheck",
+    "e2e": "pnpm --filter @warilink/web e2e"
+  }
+}
