@@ -70,10 +70,14 @@ class SplitIn(Strict):
     receipt: ReceiptIn | None = None
 
 
+Category = Literal["food", "drinks", "groceries", "transport", "lodging", "entertainment", "daily", "other"]
+
+
 class ExpenseIn(Strict):
     title: Text
     amount_minor: Minor
     occurred_on: date | None = None
+    category: Category | None = None  # 未指定 = 未分類
     payers: list[Payer] = Field(min_length=1, max_length=100)
     split: SplitIn
 
@@ -122,6 +126,7 @@ class ExpenseOut(BaseModel):
     currency: str
     split_mode: str
     occurred_on: date | None
+    category: str | None = None
     version: int
     state: str
     payers: dict[str, int]
@@ -142,3 +147,39 @@ class RevisionOut(BaseModel):
     result: dict
     changed_by_me: bool
     created_at: str
+
+
+class ExpenseSearchOut(BaseModel):
+    items: list[ExpenseOut]
+    total_count: int  # 絞り込み後の件数(ページに関係なく)
+    total_amount_minor: int  # 絞り込み後の支出の合計(立替の合計。各人の負担額ではない)
+    next_cursor: str | None
+
+
+class CategoryStat(BaseModel):
+    category: str | None  # None = 未分類
+    count: int
+    total_minor: int
+
+
+class MonthStat(BaseModel):
+    month: str  # YYYY-MM(支出日。未入力は登録日)
+    count: int
+    total_minor: int
+
+
+class MemberStat(BaseModel):
+    member_id: str
+    paid_minor: int  # 立て替えた額
+    share_minor: int  # 負担する額(消費した額)
+
+
+class GroupStatsOut(BaseModel):
+    expense_count: int
+    total_minor: int
+    by_category: list[CategoryStat]
+    by_month: list[MonthStat]
+    by_member: list[MemberStat]
+    unconfirmed_transfer_count: int  # 送金申告済み・受取人が未確認
+    unconfirmed_transfer_minor: int
+    notes: list[str]

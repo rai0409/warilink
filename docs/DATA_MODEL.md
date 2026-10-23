@@ -144,3 +144,37 @@
   `expense_revisions.spec/result` が正本。集計が必要になった時点で追加する。
 - `eval_datasets` / `eval_runs` / `model_promotions` は DB ではなく、評価 CLI の入出力ファイル(データセットのハッシュ・指標・
   `accepted/rejected` 判定)として実装した。同意データの管理(Phase 6)と合わせて DB 化する。
+
+
+## 8. Passkey(P07、2026-10-20)
+
+- `identities` に `webauthn_user_handle`(32 バイトの乱数、一意。個人情報を含まない)と `registered_at` を追加。
+  ゲストの昇格は同じ行の `kind` を `registered` にするだけで、`memberships`・支出・精算の参照は変わらない。
+- `passkey_credentials`: `credential_id`(一意)、公開鍵(COSE)、`sign_count`、`transports`、`aaguid`、`device_type`、`backed_up`、
+  `nickname`、`last_used_at`、`revoked_at`(論理削除)。秘密鍵はサーバーに存在しない。
+- `webauthn_challenges`: `flow_hash`(クライアントに渡す flow_id の SHA-256)、`purpose`、`challenge`、開始した `identity_id` / `session_id`、
+  `rp_id`、`expires_at`(既定 300 秒)、`used_at`(1 回だけ)。
+- `sessions.assurance_level` に `passkey` を使う(既存の `guest` はそのまま)。
+- ログイン時に「この端末のゲストのグループを移す」を選ぶと、ゲストの `memberships.identity_id` を登録済み identity に付け替える
+  (両方が同じグループにいる場合は移さない)。OCR の利用枠の台帳は移さない(Cookie の作り直しによる枠の増加を防ぐ)。
+- マイグレーション `20261021_7eb489713d2a_p07_passkeys.py` は追加のみ(既存データは変えない)。
+
+
+## 9. 振込先(P08、2026-10-20)
+
+| テーブル | 主な列 | 備考 |
+|---|---|---|
+| payment_destinations | owner_identity_id, kind(bank/paypay), current_version, share_with_payers, erased_at | 有効なものは 1 人 1 件(部分一意インデックス) |
+| payment_destination_versions | destination_id, version, key_version, wrapped_dek, nonce, ciphertext, masked_label | 版は作成後に変更しない。消去で暗号文・包んだ鍵を NULL にする |
+| transfer_destination_pins | transfer_id(PK), destination_version_id, reference_code | 支払者に最初に表示した版と照合コード |
+
+- 暗号化: 版ごとの DEK で AES-256-GCM。DEK を KEK(`WARILINK_DESTINATION_KEYS` の `key_version`)で包む。AAD は「振込先 ID・版・所有者」。
+  KEK は DB・バックアップに入らない。鍵の入れ替えは `python -m app.modules.payment_destinations.cli rotate`(DEK の包み直し)。
+- 監査(`audit_events`): destination.create / change / sharing / reveal_own / disclose / erase。ID と版だけを記録する。
+- マイグレーション `20261021_6b7a2ce8acf1_p08_payment_destinations.py` は追加のみ。
+
+
+## 10. 支出のカテゴリ(P09、2026-10-20)
+
+- `expenses.category`(NULL 許可、CHECK で 8 種類に限定)と索引 `ix_expense_group_occurred(group_id, occurred_on)` を追加。
+- マイグレーション `20261021_69e7bf0883a7_p09_expense_category.py` は追加のみ(既存の支出は NULL = 未分類)。

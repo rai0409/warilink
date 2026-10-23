@@ -43,6 +43,8 @@ const REASON_LABEL: Record<string, string> = {
   QTY_PRICE_INCONSISTENT: "単価×数量と金額が合わない",
   NAME_MISSING: "商品名を読み取れなかった",
   SCOPED_DISCOUNT: "直前の商品だけの値引きと判断",
+  POINT_USAGE: "ポイント利用(誰の負担を減らすか確認してください)",
+  REFUND: "返品・取消の行",
 };
 
 const ALLOC_LABEL: Record<AllocMode, string> = { equal: "均等", units: "数量で分ける", exact: "金額指定" };

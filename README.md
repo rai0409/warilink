@@ -18,6 +18,26 @@ open http://localhost:3000
 make down        # このプロジェクトのコンテナのみ停止(ボリュームは残す)
 ```
 
+## 現在の状態(2026-10-21)
+
+商用公開の判定は **NO_GO**(実レシートの精度が未測定、CI 未実行、鍵管理が未整備、非商用ライセンス)。
+詳細と採点は `docs/TEST_AND_DELIVERY.md` の「受入判定」を参照してください。
+
+## テストの安全装置
+
+API テスト(`make test`)と E2E(`make e2e`)は DB を作り直します。接続先がローカルの `warilink_test*` / `warilink_e2e*`
+でなければ実行前に中止します。CI の構成は `docs/TEST_AND_DELIVERY.md` を参照してください。
+
+## 運用ジョブ
+
+- 期限切れのレシート画像の削除と整合性検査: `scripts/warilink_purge_job.sh`(自動では登録しない。`infra/ops/README.md`)
+- バックアップ・復元訓練: `.venv/bin/python scripts/warilink_backup.py drill --workdir <空のディレクトリ>`
+
+## 本番設定について
+
+`infra/compose.yaml` は開発用です。`WARILINK_ENVIRONMENT=production` にすると、Cookie の Secure・https の許可オリジン・
+既定以外の DB パスワードなどがそろっていない限り API は起動しません。条件は `docs/SECURITY_PRIVACY.md` §2.1 を参照してください。
+
 ## ローカル開発
 
 ```bash

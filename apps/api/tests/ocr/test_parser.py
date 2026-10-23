@@ -1,4 +1,4 @@
-from app.ocr.parser import find_amount, parse_receipt
+from app.ocr.parser import PARSER_VERSION, find_amount, parse_receipt
 from app.ocr.tokens import OcrToken
 
 from .helpers import tokens_from_lines
@@ -107,3 +107,123 @@ def test_find_amount_ignores_long_bare_numbers():
     assert find_amount("TEL 0312345678") is None
     assert find_amount("¥1,300").value == 1300
     assert find_amount("▲100").value == -100
+
+
+# ---------------------------------------------------------------- P10: 静かな誤り(商品の欠落・ポイント・途中の合計)
+# 修正前のパーサー(rule-ja-0.1.0)で失敗することを確認してから修正した
+
+
+def items3(d):
+    return [(i.name, i.quantity, i.line_minor) for i in d.items]
+
+
+def codes(d):
+    return {w["code"] for w in d.warnings}
+
+
+def test_intermediate_total_does_not_drop_later_items():
+    # A300 → 途中の「合計 300」→ B200 → 最終の「合計 500」。以前は B を黙って捨て、差額 0 で警告なしだった
+    d = parse_receipt(tokens_from_lines([
+        "スーパー", ("商品A", "¥300"), ("合計", "¥300"), ("商品B", "¥200"), ("合計", "¥500"),
+        ("お預り", "¥1,000"), ("お釣り", "¥500"),
+    ]))
+    assert items3(d) == [("商品A", 1, 300), ("商品B", 1, 200)]
+    assert d.total_minor == 500 and d.difference_minor == 0
+    assert "MULTIPLE_TOTALS" in codes(d)  # 候補が複数あったことは必ず知らせる
+    assert [c["value"] for c in d.total_candidates] == [300, 500]
+
+
+def test_total_candidates_after_payment_are_not_used():
+    # 支払(お預り)より後の「合計」らしい行(ポイント合計など)は最終合計にしない
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥1,000"), ("合計", "¥1,000"), ("お預り", "¥1,000"), ("お釣り", "¥0"),
+        ("累計ポイント合計", "1,234"),
+    ]))
+    assert d.total_minor == 1000 and d.difference_minor == 0 and "MULTIPLE_TOTALS" not in codes(d)
+
+
+def test_conflicting_totals_are_flagged_not_corrected():
+    # 合計が 2 つあり、どちらとも明細が一致しない → 数値を補正せず、要確認
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥300"), ("商品B", "¥200"), ("合計", "¥450"), ("ご請求額", "¥480"),
+    ]))
+    assert d.total_minor == 480 and d.difference_minor == -20
+    assert {"MULTIPLE_TOTALS", "TOTAL_MISMATCH"} <= codes(d)
+    assert [i.line_minor for i in d.items] == [300, 200]  # 商品の金額は書き換えない
+
+
+def test_item_after_final_total_is_reported():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥500"), ("合計", "¥500"), ("お預り", "¥1,000"), ("商品Z", "¥300"),
+    ]))
+    assert items3(d) == [("商品A", 1, 500)]
+    assert "ITEM_AFTER_TOTAL" in codes(d)
+
+
+def test_printed_item_count_detects_missing_items_even_when_total_matches():
+    # 合計が一致していても、印字された点数と読み取った数量が違えば知らせる(合計一致は十分条件ではない)
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥300"), ("商品B", "¥200"), ("お買上点数", "3点"), ("合計", "¥500"),
+    ]))
+    assert d.difference_minor == 0
+    assert d.item_count_printed == 3 and "ITEM_COUNT_MISMATCH" in codes(d)
+    ok = parse_receipt(tokens_from_lines([
+        "店", ("商品A 2個", "¥600"), ("お買上点数", "2点"), ("合計", "¥600"),
+    ]))
+    assert "ITEM_COUNT_MISMATCH" not in codes(ok)
+
+
+def test_points_earned_and_balance_are_ignored():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥1,000"), ("合計", "¥1,000"), ("現金", "¥1,000"), ("今回付与ポイント", "10"),
+        ("ポイント残高", "1,234"),
+    ]))
+    assert d.adjustments == [] and "POINT_USAGE_AMBIGUOUS" not in codes(d) and d.difference_minor == 0
+
+
+def test_points_used_before_total_become_reviewable_discount():
+    # 合計の前に引かれたポイント利用: 割引として下書きに入れるが、必ず要確認(誰の負担を減らすかは利用者が決める)
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥1,000"), ("ポイント利用", "-100"), ("合計", "¥900"),
+    ]))
+    assert [(a.kind, a.amount_minor, a.needs_review) for a in d.adjustments] == [("discount", -100, True)]
+    assert "POINT_USAGE" in d.adjustments[0].reasons
+    assert d.difference_minor == 0 and "POINT_USAGE_AMBIGUOUS" in codes(d)
+
+
+def test_points_used_as_payment_after_total_do_not_change_amounts():
+    # 合計の後のポイント払い(支払手段): 割り勘の金額は変えず、立替額の扱いを確認してもらう
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥1,000"), ("合計", "¥1,000"), ("ポイント充当", "¥300"), ("現金", "¥700"),
+    ]))
+    assert d.adjustments == [] and d.total_minor == 1000 and d.difference_minor == 0
+    assert "POINT_USAGE_AMBIGUOUS" in codes(d)
+
+
+def test_refund_line_is_reviewable_negative_adjustment():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥800"), ("返品 商品B", "-¥200"), ("合計", "¥600"),
+    ]))
+    assert items3(d) == [("商品A", 1, 800)]
+    (a,) = d.adjustments
+    assert a.kind == "discount" and a.amount_minor == -200 and a.needs_review and "REFUND" in a.reasons
+
+
+def test_intermediate_subtotal_uses_last_subtotal_before_total():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("商品A", "¥300"), ("小計", "¥300"), ("商品B", "¥200"), ("小計", "¥500"),
+        ("消費税(10%)", "¥50"), ("合計", "¥550"),
+    ]))
+    assert items3(d) == [("商品A", 1, 300), ("商品B", 1, 200)]
+    assert d.subtotal_minor == 500 and d.tax_mode == "exclusive" and d.difference_minor == 0
+    assert "SUBTOTAL_MISMATCH" not in codes(d)
+
+
+def test_parser_version_bumped_and_existing_keys_kept():
+    d = parse_receipt(tokens_from_lines(["店", ("商品A", "¥100"), ("合計", "¥100")])).to_json()
+    assert PARSER_VERSION != "rule-ja-0.1.0"
+    for k in ("parser_version", "store_name", "purchased_on", "items", "adjustments", "subtotal_minor", "total_minor",
+              "tax_mode", "difference_minor", "warnings", "lines"):
+        assert k in d
+    assert {"id", "name", "quantity", "line_minor", "tax_group", "confidence", "needs_review", "reasons", "bbox",
+            "source_lines"} <= set(d["items"][0])

@@ -10,7 +10,9 @@ const TABS = [
   { href: "", label: "概要" },
   { href: "/expenses/new", label: "支出を追加" },
   { href: "/receipt", label: "レシート" },
+  { href: "/expenses", label: "探す" },
   { href: "/settle", label: "精算" },
+  { href: "/stats", label: "集計" },
   { href: "/settings", label: "設定" },
 ];
 
@@ -41,7 +43,9 @@ export default function GroupLayout({ children }: { children: React.ReactNode })
       <nav className="tabs" aria-label="グループのメニュー">
         {TABS.map((t) => {
           const href = base + t.href;
-          const current = t.href === "" ? pathname === base : pathname.startsWith(href);
+          // 「探す」(/expenses)は「支出を追加」(/expenses/new)と重ならないよう完全一致で判定する
+          const current =
+            t.href === "" || t.href === "/expenses" ? pathname === href : pathname.startsWith(href);
           return (
             <Link key={t.href} href={href} aria-current={current ? "page" : undefined}>
               {t.label}

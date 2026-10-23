@@ -43,19 +43,24 @@ export default function SettingsPage() {
             <button type="submit" className="secondary" style={{ flex: "0 0 auto" }}>追加</button>
           </div>
         </form>
-        {group.is_owner && <InviteBox publicId={group.public_id} />}
+        <p className="muted">名前だけのメンバー(アプリを使わない人)は、参加者なら誰でも追加できます。</p>
+        {group.is_owner ? (
+          <InviteBox publicId={group.public_id} />
+        ) : (
+          <p className="muted">招待URLはグループを作成した人が発行できます。</p>
+        )}
         {error && <p className="error" role="alert">{error}</p>}
       </section>
 
       <section className="card" aria-labelledby="recv-h">
-        <h2 id="recv-h">受取設定(振込先)</h2>
-        <p><span className="badge">準備中</span> 振込先の保存は、Passkey で登録した方だけが使える機能として準備中です。</p>
-        <p className="muted">
-          登録後は、振込先を精算の当事者(あなたに支払う人)にだけ表示します。現在は振込先を保存できません。
-          ゲストのままでも割り勘と精算はすべて利用できます。
+        <h2 id="recv-h">受取設定(振込先)とアカウント</h2>
+        <p>
+          振込先は Passkey を登録した方だけが保存でき、あなたに支払う精算の相手にだけ表示します。{" "}
+          <Link href="/account">アカウントと Passkey・振込先の設定へ</Link>
         </p>
         <p className="muted">
-          ゲストの情報はこのブラウザの Cookie に紐づいています。Cookie を消すと、このグループに戻れなくなる場合があります。
+          ゲストのままでも割り勘と精算はすべて利用できます。ゲストの情報はこのブラウザの Cookie に紐づいています。Cookie
+          を消すと、このグループに戻れなくなる場合があります。
         </p>
       </section>
 

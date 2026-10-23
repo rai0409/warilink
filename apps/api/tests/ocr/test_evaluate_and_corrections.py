@@ -20,24 +20,35 @@ def test_score_exact_and_amount_error():
     assert not bad["exact"] and bad["wrong_amounts"] == 1 and bad["matched_lines"] == 1
 
 
+def _result(digest="x", **metrics):
+    base = {"line_recall": 0.9, "line_precision": 0.9, "receipt_exact_rate": 0.5, "structure_exact_rate": 0.5,
+            "total_correct_rate": 0.8, "amount_error_rate": 0.05, "samples": 40}
+    prov = {"eval_version": "eval-0.2.0", "parser_version": "p", "preprocess_version": "c", "model": {"name": "m"}}
+    return {"status": "ok", "dataset_digest": digest, "metrics": {**base, **metrics}, "provenance": prov}
+
+
 def test_compare_rejects_regression_and_refuses_different_dataset():
-    base = {"dataset_digest": "x", "metrics": {"line_recall": 0.9, "line_precision": 0.9, "receipt_exact_rate": 0.5,
-                                               "total_correct_rate": 0.8, "amount_error_rate": 0.05}}
-    worse = {"dataset_digest": "x", "metrics": {**base["metrics"], "receipt_exact_rate": 0.4}}
-    better = {"dataset_digest": "x", "metrics": {**base["metrics"], "amount_error_rate": 0.01}}
-    assert compare(worse, base)["decision"] == "rejected"
-    assert compare(better, base)["decision"] == "accepted"
-    assert compare({**better, "dataset_digest": "y"}, base)["decision"] == "incomparable"
+    base = _result()
+    assert compare(_result(receipt_exact_rate=0.4), base)["decision"] == "rejected"
+    assert compare(_result(amount_error_rate=0.01), base)["decision"] == "accepted"
+    assert compare(_result(digest="y"), base)["decision"] == "incomparable"
+    # P12: 形式の古い結果(status なし)・未測定の指標は accepted にしない
+    legacy = {"dataset_digest": "x", "metrics": base["metrics"]}
+    assert compare(legacy, base)["decision"] == "blocked"
+    assert compare(_result(line_recall=None), base)["decision"] == "blocked"
 
 
 def test_dataset_uses_only_verified_or_synthetic_labels(tmp_path):
-    for name, status in [("a", "verified"), ("b", "synthetic"), ("c", "proposed"), ("d", None)]:
+    for name, status, source in [("a", "verified", "public"), ("b", "synthetic", None), ("c", "proposed", None),
+                                 ("d", None, None), ("f", "verified", None)]:
         (tmp_path / f"{name}.png").write_bytes(b"x")
-        (tmp_path / f"{name}.json").write_text(json.dumps({"label_status": status, **LABEL}))
+        (tmp_path / f"{name}.json").write_text(json.dumps({"label_status": status, **LABEL}
+                                                          | ({"source": source} if source else {})))
     (tmp_path / "e.png").write_bytes(b"x")  # ラベルなし
     samples, skipped = load_dataset(tmp_path)
     assert sorted(p.stem for p, _ in samples) == ["a", "b"]
-    assert skipped == {"label_proposed": 1, "label_None": 1, "no_label": 1}
+    # 出所(source)の無い verified は区分できないため使わない(P12)
+    assert skipped == {"label_proposed": 1, "label_None": 1, "no_label": 1, "unknown_source": 1}
 
 
 def test_corrections_are_classified():

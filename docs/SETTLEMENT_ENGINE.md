@@ -80,6 +80,22 @@ rule = { type: proportional|equal|members|exact, scope_item_ids?, scope_tax_grou
 
 「送金済み」として数えるのは、`reported_paid`(送金申告済み)と `recipient_confirmed`(受取人確認済み)の送金だけ(**ロック済み送金**)。Phase 5 では銀行照合が `matched` の送金も加える。
 
+#### 送金申告と受取確認の区別(2026-10-20 追加、P01)
+
+- 再計算の扱いは変えない: `reported_paid` も `recipient_confirmed` もロック済みとして残高から差し引く(後方互換)。
+- ただし表示と API では次のように分ける。どちらも銀行での確認ではなく、着金の事実を示さない。
+
+| 状態 | 意味 | `status_label` | `is_recipient_confirmed` |
+|---|---|---|---|
+| `unpaid` | 未払い | 未払い | false |
+| `reported_paid` | 支払者の自己申告。受取人は未確認 | 送金申告済み(受取人は未確認) | false |
+| `recipient_confirmed` | 受取人の手動確認(申告なしでも可) | 受取人が確認済み | true |
+| `superseded` | 新しい精算案に置き換え | 新しい精算案に置き換え済み | false |
+
+- 残高の行には、`settled_*_minor`(ロック済み合計)のうち申告のみで未確認の額を `reported_unconfirmed_out_minor` / `reported_unconfirmed_in_minor` として示す。
+- 確定バッチには `progress`(未払い・申告済み未確認・受取確認済みの件数と金額)、精算プレビューには `locked_progress` を付ける。
+- 状態は前に戻らない: 受取確認後の申告は冪等に `recipient_confirmed` を返す。申告は支払者本人、確認は受取人本人だけ(他方は 403、当事者以外は 404)。
+
 ## 6. 送金回数の最適化
 
 ### 前提(API の `optimization.assumptions` で毎回返す)
@@ -133,6 +149,17 @@ API は次の項目も返す:
 | 20 | 772 ms |
 
 本番サーバーの CPU で改めて測り、上限を調整すること。
+
+### テストでの扱い(CI の速度差で結果が変わらないようにする)
+
+- 2026-10-19 の GitHub Actions(push 実行)で、20人の固定入力が `time_limit` になり失敗した。手元(M3)では約 750ms だが、
+  8 CPU に 16 プロセスの負荷をかけると毎回 1500ms を超えてフォールバックすることを再現した(遅い CI ランナーと同じ状況)。
+- 時間制限を延ばしたり skip したりせず、テストを次の 3 つに分けた(`tests/domain/test_settlement.py`):
+  1. **厳密性**: 20人の固定入力 2 件(CI で失敗した seed 3 と、和0の部分集合を 4 つ埋め込んだ入力)を、十分な時間制限で解き、
+     件数を DP とは別手順のオラクル(和0の部分集合の全列挙+最大分割の探索)と照合する。
+  2. **既定 1500ms の契約**: 厳密解なら件数がオラクルと一致、時間切れなら `greedy_fallback` / `time_limit` /
+     `minimum_transfer_count=null` で、どちらでも残高が 0 になる。
+  3. **時間切れ分岐**: 呼ばれるたびに 1 秒進む時計に差し替え、実時間に依存せずフォールバックを確かめる。
 
 ### 検証(送金後に全員の残高が 0)
 

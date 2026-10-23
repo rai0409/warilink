@@ -76,6 +76,7 @@ export default function GroupOverviewPage() {
         <p className="row">
           <Link className="button" href={`/g/${publicId}/expenses/new`}>支出を追加</Link>
           <Link className="button secondary" href={`/g/${publicId}/receipt`}>レシートから商品別に追加</Link>
+          <Link className="button secondary" href={`/g/${publicId}/expenses`}>支出を探す</Link>
         </p>
         {expenses?.length === 0 && <p className="muted">まだ支出はありません</p>}
         <ul className="list" aria-label="支出">

@@ -1,5 +1,7 @@
+import functools
 import random
 import time
+from types import SimpleNamespace
 
 import pytest
 from hypothesis import given, settings
@@ -119,12 +121,96 @@ def test_time_limit_fallback_is_safe():
     verify_transfers(bal, res.transfers)
 
 
-def test_exact_20_people_within_default_limit():
+def enumerated_min_transfers(values: list[int]) -> int:
+    """独立したオラクル(DP とは別手順): 和0の部分集合を全列挙し、それらで全体を覆う最大分割を探索する。
+
+    最小送金件数 = 非ゼロ人数 - 「和0の部分集合への最大分割数」。20人規模でも、和0の部分集合は少数なので
+    全列挙(2^n 回の加算)と、最下位の要素を含む和0部分集合を順に選ぶ探索で厳密に求まる。
+    """
+    n = len(values)
+    full = (1 << n) - 1
+    zero_masks: list[int] = []
+    sums = [0] * (1 << n)
+    for mask in range(1, 1 << n):
+        low = mask & -mask
+        sums[mask] = sums[mask ^ low] + values[low.bit_length() - 1]
+        if sums[mask] == 0:
+            zero_masks.append(mask)
+
+    @functools.cache
+    def best(rest: int) -> int:
+        if rest == 0:
+            return 0
+        low = rest & -rest
+        return max(1 + best(rest ^ m) for m in zero_masks if m & low and m & rest == m)
+
+    return n - best(full)
+
+
+@functools.cache
+def _twenty_people_cases() -> list[tuple[dict[str, int], int]]:
+    # CI で失敗した固定入力(seed 3)
     rng = random.Random(3)
     vals = [rng.randint(-50_000, 50_000) for _ in range(19)]
     vals.append(-sum(vals))
-    res = optimize_transfers({f"m{i}": v for i, v in enumerate(vals)})
-    assert res.is_exact_minimum, res.fallback_reason
+    cases = [({f"m{i}": v for i, v in enumerate(vals)}, enumerated_min_transfers([v for v in vals if v != 0]))]
+    # 和0のグループを4つ埋め込んだ20人(+a/-a の組は含めない)。受取側は互いに異なる 2 のべき乗(×37)、
+    # 支払側は各グループの受取合計。2進表現の一意性から和0の部分集合はグループの和集合に限られ、最小件数は 20 - 4 = 16
+    planted: list[int] = []
+    exp = 0
+    for size in (6, 5, 5, 4):
+        part = [37 * 2 ** (exp + k) for k in range(size - 1)]
+        exp += size - 1
+        part.append(-sum(part))
+        planted.extend(part)
+    assert len(planted) == 20 and len({abs(v) for v in planted}) == 20
+    assert enumerated_min_transfers(planted) == 16
+    cases.append(({f"p{i:02d}": v for i, v in enumerate(planted)}, 16))
+    return cases
+
+
+@pytest.mark.parametrize("case", range(2))
+def test_exact_20_people_matches_independent_oracle(case):
+    """厳密解の正しさ。CI の速度に左右されないよう時間制限を十分に取り、件数はオラクルと照合する。"""
+    bal, expected = _twenty_people_cases()[case]
+    res = optimize_transfers(bal, time_limit_ms=120_000)
+    assert res.is_exact_minimum and res.method == "exact_subset_dp", res.fallback_reason
+    assert res.minimum_transfer_count == expected == len(res.transfers)
+    verify_transfers(bal, res.transfers)
+
+
+@pytest.mark.parametrize("case", range(2))
+def test_20_people_default_limit_contract(case):
+    """既定の 1500ms では、速い環境なら厳密解、遅い環境なら安全なフォールバック。どちらでも契約を満たす。"""
+    bal, expected = _twenty_people_cases()[case]
+    res = optimize_transfers(bal)
+    if res.is_exact_minimum:
+        assert res.minimum_transfer_count == expected == len(res.transfers)
+    else:
+        assert res.method == "greedy_fallback" and res.fallback_reason == "time_limit"
+        assert res.minimum_transfer_count is None
+        assert len(res.transfers) >= expected
+    verify_transfers(bal, res.transfers)
+
+
+def test_time_limit_fallback_deterministic(monkeypatch):
+    """時間切れ分岐を、遅い CPU を模した時計で決定的に確かめる(実時間に依存しない)。"""
+    from app.domain import settlement as mod
+
+    clock = {"t": 0.0}
+
+    def slow_clock() -> float:
+        clock["t"] += 1.0  # 呼ばれるたびに1秒進む = 極端に遅い環境
+        return clock["t"]
+
+    # time モジュール全体ではなく settlement が参照する名前だけを差し替える
+    monkeypatch.setattr(mod, "time", SimpleNamespace(perf_counter=slow_clock))
+    bal, _ = _twenty_people_cases()[1]
+    res = optimize_transfers(bal)
+    assert res.method == "greedy_fallback" and res.fallback_reason == "time_limit"
+    assert not res.is_exact_minimum and res.minimum_transfer_count is None
+    verify_transfers(bal, res.transfers)
+    assert sum(t.amount_minor for t in res.transfers) > 0
 
 
 def test_opposite_pairs_shortcut():

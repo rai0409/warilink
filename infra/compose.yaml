@@ -23,6 +23,7 @@ services:
     build: ../apps/api
     environment:
       WARILINK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-warilink}:${POSTGRES_PASSWORD:-warilink-dev-only}@db:5432/${POSTGRES_DB:-warilink}
+      # 開発用の構成。production にすると http の Origin・Cookie の Secure なし・既定パスワードのため API は起動を拒否する
       WARILINK_ENVIRONMENT: ${WARILINK_ENVIRONMENT:-development}
       WARILINK_COOKIE_SECURE: ${WARILINK_COOKIE_SECURE:-false}
       WARILINK_FEATURE_BANK_PROVIDER: "false"

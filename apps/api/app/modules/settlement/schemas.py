@@ -11,8 +11,12 @@ class BalanceRowOut(BaseModel):
     member_id: str
     paid_minor: int
     share_minor: int
+    # settled_* はロック済み送金(申告済み+受取確認済み)の合計。再計算ではどちらも支払い済みとして扱う
     settled_out_minor: int
     settled_in_minor: int
+    # そのうち「送金申告済み・受取人が未確認」の額。着金の事実ではない
+    reported_unconfirmed_out_minor: int = 0
+    reported_unconfirmed_in_minor: int = 0
     net_minor: int
 
 
@@ -60,6 +64,20 @@ class TransferOut(BaseModel):
     currency: str
     status: Literal["unpaid", "reported_paid", "recipient_confirmed", "superseded"]
     version: int
+    # 表示用。reported_paid は支払者の自己申告で、受取人の確認や銀行での確認ではない
+    status_label: str
+    is_recipient_confirmed: bool
+
+
+class SettlementProgressOut(BaseModel):
+    """送金の進み具合。申告済み(未確認)と受取確認済みを別々に数える。"""
+
+    unpaid_count: int
+    unpaid_minor: int
+    reported_unconfirmed_count: int
+    reported_unconfirmed_minor: int
+    recipient_confirmed_count: int
+    recipient_confirmed_minor: int
 
 
 class TransferDetailOut(TransferOut):
@@ -78,6 +96,7 @@ class SettlementPlanOut(BaseModel):
     transfers: list[PlannedTransferOut]
     optimization: OptimizationOut
     locked_transfers: list[TransferOut]
+    locked_progress: SettlementProgressOut
 
 
 class BatchOut(BaseModel):
@@ -90,6 +109,7 @@ class BatchOut(BaseModel):
     balances: dict[str, int]
     optimization: OptimizationOut
     transfers: list[TransferOut]
+    progress: SettlementProgressOut
 
 
 class ExpensePreviewOut(BaseModel):

@@ -8,11 +8,14 @@ export type OcrItem = {
 export type OcrAdjustment = {
   id: string; kind: AdjDraft["kind"]; label: string; amount_minor: number; tax_group: "8" | "10" | null;
   scope_item_ids: string[] | null; confidence: number; needs_review: boolean; bbox: number[];
+  reasons?: string[]; // rule-ja-0.2.0 以降。古い下書きには無い
 };
 export type OcrDraft = {
   store_name: string | null; purchased_on: string | null; items: OcrItem[]; adjustments: OcrAdjustment[];
   total_minor: number | null; tax_mode: string; difference_minor: number | null; image_scale: number;
   warnings: { code: string; message: string }[];
+  total_candidates?: { value: number; line: number }[]; // rule-ja-0.2.0 以降
+  item_count_printed?: number | null;
 };
 
 /** 読み取り結果を編集用の下書きへ。負担者は未選択のまま(利用者が選ぶ)。 */
@@ -37,7 +40,10 @@ export function draftToEditor(d: OcrDraft): { initial: InitialDraft; review: Rec
     if (a.needs_review) {
       review[a.id] = {
         confidence: a.confidence,
-        reasons: [...(a.confidence < 0.9 ? ["LOW_CONFIDENCE"] : []), ...(a.scope_item_ids ? ["SCOPED_DISCOUNT"] : [])],
+        // 新しいパーサーは理由を返す。古い下書き(rule-ja-0.1.0)は確信度と対象から推定する
+        reasons: a.reasons?.length
+          ? a.reasons
+          : [...(a.confidence < 0.9 ? ["LOW_CONFIDENCE"] : []), ...(a.scope_item_ids ? ["SCOPED_DISCOUNT"] : [])],
       };
     }
   }

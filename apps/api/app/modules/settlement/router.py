@@ -6,9 +6,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.errors import ApiError, not_found
+from app.core.errors import ApiError
 from app.core.idempotency import run_idempotent
-from app.core.security import current_identity, load_group_access, parse_uuid
+from app.core.security import current_identity, load_group_access, load_transfer_party, parse_uuid
 from app.domain.settlement import verify_transfers
 from app.models.tables import (
     AuditEvent,
@@ -120,19 +120,8 @@ def list_batches(public_id: str, db: Session = Depends(get_db), ident: Identity 
 
 
 def _load_transfer_for_party(db: Session, transfer_id: str, ident: Identity, *, for_update: bool = False):
-    q = select(SettlementTransfer).where(SettlementTransfer.id == parse_uuid(transfer_id))
-    if for_update:
-        q = q.with_for_update()
-    t = db.execute(q).scalar_one_or_none()
-    if t is None:
-        raise not_found()
-    me = db.execute(select(Membership).where(
-        Membership.group_id == t.group_id, Membership.identity_id == ident.id,
-        Membership.status == "active")).scalar_one_or_none()
-    # 精算の当事者(支払者・受取人)以外には存在を隠す
-    if me is None or me.id not in (t.from_member_id, t.to_member_id):
-        raise not_found()
-    return t, me
+    # 精算の当事者(支払者・受取人)以外には存在を隠す(振込先の表示と同じ判定を共有する)
+    return load_transfer_party(db, transfer_id, ident, for_update=for_update)
 
 
 def _transition(db: Session, t: SettlementTransfer, ident: Identity, kind: str, to: str) -> None:

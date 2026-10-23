@@ -281,3 +281,267 @@ def test_receipt_from_another_group_cannot_be_linked(user_factory, worker_online
             "split": {"mode": "equal", "shares": [{"member_id": m, "value": 1}]}, "source_receipt_id": rid}
     r = a.post(f"/groups/{g2['public_id']}/expenses", json=body)
     assert r.status_code == 422 and r.json()["code"] == "RECEIPT_NOT_FOUND"
+
+
+# ---------------------------------------------------------------- P04: 重い処理の前の拒否と濫用対策
+
+
+def forged_png(width: int, height: int) -> bytes:
+    """ヘッダー(IHDR)だけが巨大な寸法を名乗る小さな PNG。画素データは持たない(展開爆弾の模擬)。"""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IEND", b"")
+
+
+def set_env(monkeypatch, **kw):
+    for k, v in kw.items():
+        monkeypatch.setenv(f"WARILINK_{k.upper()}", str(v))
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def heavy_spy(monkeypatch):
+    """normalize_upload(デコード・再エンコード)が呼ばれた回数を数える。"""
+    from app.ocr import images
+
+    calls = {"n": 0}
+    real = images.normalize_upload
+
+    def spy(raw):
+        calls["n"] += 1
+        return real(raw)
+
+    monkeypatch.setattr(images, "normalize_upload", spy)
+    return calls
+
+
+def counts(sm):
+    with sm() as db:
+        return (db.execute(select(Receipt)).scalars().all().__len__(),
+                db.execute(select(OcrQuotaEntry)).scalars().all().__len__())
+
+
+def test_body_size_checked_before_multipart_parsing(user_factory, worker_online, monkeypatch):
+    set_env(monkeypatch, receipt_max_bytes=1000)
+    a, outsider = User(), User()
+    g, _ = make_group(a)
+    big = png(size=(800, 800)) + b"\0" * 70_000
+    # 非メンバーでも、本文の解析(=一時ファイルへの書き込み)より前に大きさで拒否される
+    r = upload(outsider, g["public_id"], big)
+    assert r.status_code == 413 and r.json()["code"] == "IMAGE_TOO_LARGE"
+
+    def gen():
+        yield b"--x\r\n"
+
+    r = outsider.c.post(f"/api/v1/groups/{g['public_id']}/receipts", content=gen(),
+                        headers={"Content-Type": "multipart/form-data; boundary=x", "Idempotency-Key": "k"})
+    assert r.status_code == 411 and r.json()["code"] == "LENGTH_REQUIRED"
+
+
+def test_pixel_bomb_rejected_from_header_without_decoding(user_factory, worker_online, sm, storage, heavy_spy):
+    a = User()
+    g, _ = make_group(a)
+    r = upload(a, g["public_id"], forged_png(30_000, 30_000))
+    assert r.status_code == 413 and r.json()["code"] == "IMAGE_TOO_MANY_PIXELS"
+    assert heavy_spy["n"] == 0 and counts(sm) == (0, 0) and list(storage.iterdir()) == []
+    assert a.get("/ocr/quota").json()["remaining"] == 3
+
+
+def test_pixels_between_one_and_two_times_limit_are_rejected(user_factory, worker_online, monkeypatch):
+    # Pillow の既定は上限の 2 倍までは警告だけ。ここでは 1.2 倍でも拒否する
+    set_env(monkeypatch, receipt_max_pixels=100_000)
+    a = User()
+    g, _ = make_group(a)
+    r = upload(a, g["public_id"], png(size=(400, 300)))
+    assert r.status_code == 413 and r.json()["code"] == "IMAGE_TOO_MANY_PIXELS"
+    set_env(monkeypatch, receipt_max_pixels=40_000_000, receipt_max_side=1000)
+    r = upload(a, g["public_id"], png(size=(1200, 400)))
+    assert r.status_code == 413 and r.json()["code"] == "IMAGE_TOO_MANY_PIXELS"
+
+
+def test_corrupt_and_mislabeled_files(user_factory, worker_online, sm):
+    a = User()
+    g, _ = make_group(a)
+    pid = g["public_id"]
+    truncated = png(size=(400, 600))[:200]
+    r = upload(a, pid, truncated)
+    assert r.status_code == 415 and r.json()["code"] == "IMAGE_UNREADABLE"
+    # 拡張子・Content-Type は信用せず中身で判定する(PNG を .jpg / image/jpeg と名乗っても PNG として扱う)
+    r = a.post(f"/groups/{pid}/receipts", files={"file": ("x.jpg", png(), "image/jpeg")})
+    assert r.status_code == 201
+    r = a.post(f"/groups/{pid}/receipts", files={"file": ("x.png", b"GIF89a" + b"\0" * 100, "image/png")})
+    assert r.status_code == 415
+    assert counts(sm) == (1, 1)
+
+
+def test_quota_exhausted_rejected_before_heavy_processing(user_factory, worker_online, heavy_spy):
+    a = User()
+    g, _ = make_group(a)
+    for c in (10, 20, 30):
+        assert upload(a, g["public_id"], png(c)).status_code == 201
+    heavy_spy["n"] = 0
+    r = upload(a, g["public_id"], png(40))
+    assert r.status_code == 429 and r.json()["code"] == "OCR_QUOTA_EXCEEDED"
+    assert heavy_spy["n"] == 0
+
+
+def test_identity_rate_and_pending_limits(user_factory, worker_online, monkeypatch, sm, storage, heavy_spy):
+    set_env(monkeypatch, ocr_max_pending_per_identity=1)
+    a = User()
+    g, _ = make_group(a)
+    assert upload(a, g["public_id"], png(10)).status_code == 201
+    r = upload(a, g["public_id"], png(20))  # 1 枚目がまだ読み取り待ち
+    assert r.status_code == 429 and r.json()["code"] == "OCR_RATE_LIMITED"
+    assert heavy_spy["n"] == 1 and counts(sm) == (1, 1) and len(list(storage.glob("*.jpg"))) == 1
+
+    set_env(monkeypatch, ocr_max_pending_per_identity=10, ocr_rate_identity_per_10min=2)
+    assert upload(a, g["public_id"], png(30)).status_code == 201
+    r = upload(a, g["public_id"], png(40))
+    assert r.status_code == 429 and r.json()["code"] == "OCR_RATE_LIMITED"
+    assert a.get("/ocr/quota").json()["used"] == 2
+
+
+def test_group_limit_counts_all_members_even_new_guests(user_factory, worker_online, monkeypatch):
+    """Cookie を作り直した別ゲストでも、同じグループへの大量アップロードはグループ単位で止まる。"""
+    set_env(monkeypatch, ocr_rate_group_per_hour=3)
+    from .conftest import join_as
+
+    a = User()
+    g, ids = make_group(a, names=("Bさん", "Cさん", "Dさん", "Eさん", "Fさん"))
+    pid = g["public_id"]
+    users = [a]
+    for name in ("Bさん", "Cさん", "Dさん", "Eさん", "Fさん"):
+        u = User()
+        join_as(u, a, pid, name)
+        users.append(u)
+    results: list[int] = []
+
+    def go(i, u):
+        results.append(upload(u, pid, png(10 + i)).status_code)
+
+    threads = [threading.Thread(target=go, args=(i, u)) for i, u in enumerate(users)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results) == [201, 201, 201, 429, 429, 429]
+
+
+def test_global_backlog_returns_busy(user_factory, worker_online, monkeypatch):
+    set_env(monkeypatch, ocr_max_queue_backlog=1)
+    a, b = User(), User()
+    ga, _ = make_group(a)
+    gb, _ = make_group(b)
+    assert upload(a, ga["public_id"], png(10)).status_code == 201
+    r = upload(b, gb["public_id"], png(20))
+    assert r.status_code == 503 and r.json()["code"] == "OCR_BUSY"
+    assert b.get("/ocr/quota").json()["used"] == 0
+
+
+def test_failure_after_saving_image_leaves_no_file_or_quota(user_factory, worker_online, monkeypatch, sm, storage):
+    from app.ocr import quota
+
+    def boom(*a, **k):
+        raise RuntimeError("db failure after save")
+
+    monkeypatch.setattr(quota, "consume", boom)
+    a = User()
+    g, _ = make_group(a)
+    with pytest.raises(RuntimeError):
+        upload(a, g["public_id"], png())
+    assert counts(sm) == (0, 0)
+    assert [p for p in storage.iterdir() if p.is_file()] == []
+
+
+# ---------------------------------------------------------------- P05: 保存期間を過ぎた画像の削除
+
+
+def age_receipts(sm, days: int, ids: list[str] | None = None):
+    with sm() as db:
+        q = update(Receipt).values(created_at=datetime.now(UTC) - timedelta(days=days))
+        if ids is not None:
+            q = q.where(Receipt.id.in_([uuid.UUID(i) for i in ids]))
+        db.execute(q)
+        db.commit()
+
+
+def test_purge_dry_run_retention_idempotent_and_scrubs_raw_text(user_factory, worker_online, sm, storage):
+    from app.ocr import images
+    from app.ocr.cli import main as cli
+
+    a = User()
+    g, _ = make_group(a)
+    pid = g["public_id"]
+    old = upload(a, pid, png(10)).json()["id"]
+    new = upload(a, pid, png(20)).json()["id"]
+    assert process_one(sm, FixedAdapter(), "w1") and process_one(sm, FixedAdapter(), "w1")
+    age_receipts(sm, 31, [old])
+    assert len(list(storage.glob("*.jpg"))) == 2
+
+    with sm() as db:
+        r = images.purge_expired(db, dry_run=True)
+    assert (r.candidates, r.deleted) == (1, 0) and len(list(storage.glob("*.jpg"))) == 2
+
+    assert cli(["purge-images", "--json"]) == 0
+    assert not (storage / f"{old}.jpg").exists() and (storage / f"{new}.jpg").exists()  # 期限内は残る
+    with sm() as db:
+        rows = {str(x.id): x for x in db.execute(select(Receipt)).scalars()}
+        assert rows[old].image_deleted_at is not None and rows[new].image_deleted_at is None
+        runs = {str(x.receipt_id): x for x in db.execute(select(OcrRun)).scalars()}
+        assert runs[old].tokens is None and "lines" not in runs[old].draft  # 生の文字も消す
+        assert runs[old].draft["items"]  # 構造(商品)は残す
+        assert runs[new].tokens and "lines" in runs[new].draft
+    assert a.get(f"/groups/{pid}/receipts/{old}/image").status_code == 410
+    # 二度目は対象なし(冪等)
+    with sm() as db:
+        assert images.purge_expired(db, dry_run=False).candidates == 0
+    assert cli(["check-storage"]) == 0
+
+
+def test_purge_partial_failure_is_retried_and_reported(user_factory, worker_online, sm, storage, monkeypatch):
+    from app.ocr import images
+    from app.ocr.cli import main as cli
+
+    a = User()
+    g, _ = make_group(a)
+    pid = g["public_id"]
+    ids = [upload(a, pid, png(c)).json()["id"] for c in (10, 20, 30)]
+    age_receipts(sm, 40)
+    (storage / f"{ids[2]}.jpg").unlink()  # 既にファイルが無い行も削除済みとして記録できる
+    real = images.delete_image
+
+    def flaky(key):
+        if key.startswith(ids[0]):
+            raise PermissionError("denied")
+        real(key)
+
+    monkeypatch.setattr(images, "delete_image", flaky)
+    assert cli(["purge-images", "--json"]) == 1  # 失敗があれば異常終了(監視で通知)
+    with sm() as db:
+        q = select(Receipt).where(Receipt.image_deleted_at.is_not(None))
+        deleted = {str(x.id) for x in db.execute(q).scalars()}
+    assert deleted == {ids[1], ids[2]}
+    assert (storage / f"{ids[0]}.jpg").exists()
+    monkeypatch.setattr(images, "delete_image", real)
+    assert cli(["purge-images"]) == 0  # 次回の実行で再試行される
+    assert list(storage.glob("*.jpg")) == []
+
+
+def test_check_storage_detects_missing_and_orphan_files(user_factory, worker_online, sm, storage):
+    from app.ocr import images
+    from app.ocr.cli import main as cli
+
+    a = User()
+    g, _ = make_group(a)
+    rid = upload(a, g["public_id"], png()).json()["id"]
+    with sm() as db:
+        assert images.check_storage(db).consistent
+    (storage / f"{rid}.jpg").unlink()
+    (storage / f"{uuid.uuid4()}.jpg").write_bytes(b"x")
+    with sm() as db:
+        rep = images.check_storage(db)
+    assert rep.missing_files == [rid] and rep.orphan_files == 1 and not rep.consistent
+    assert cli(["check-storage"]) == 2

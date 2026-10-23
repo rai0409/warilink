@@ -10,6 +10,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "14.0.0",
     "@warilink/contracts": "workspace:*",
     "next": "16.4.2",
     "react": "19.3.1",

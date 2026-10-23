@@ -35,6 +35,14 @@ LABEL_EXACT = "最小送金回数"
 LABEL_REDUCED = "送金回数を削減"
 LABEL_NONE = "精算の必要はありません"
 
+# 状態の表示名。申告(支払者の自己申告)と受取確認(受取人の手動確認)を取り違えない。どちらも銀行での確認ではない
+STATUS_LABEL = {
+    "unpaid": "未払い",
+    "reported_paid": "送金申告済み(受取人は未確認)",
+    "recipient_confirmed": "受取人が確認済み",
+    "superseded": "新しい精算案に置き換え済み",
+}
+
 
 @dataclass
 class Ledger:
@@ -73,6 +81,8 @@ def balance_rows(ledger: Ledger) -> tuple[dict[str, int], list[dict]]:
     owed = dict.fromkeys(ledger.member_ids, 0)
     sent = dict.fromkeys(ledger.member_ids, 0)
     received = dict.fromkeys(ledger.member_ids, 0)
+    rep_out = dict.fromkeys(ledger.member_ids, 0)
+    rep_in = dict.fromkeys(ledger.member_ids, 0)
     for e in ledger.entries:
         for m, v in e.payers.items():
             paid[m] += v
@@ -81,9 +91,13 @@ def balance_rows(ledger: Ledger) -> tuple[dict[str, int], list[dict]]:
     for t in ledger.locked:
         sent[str(t.from_member_id)] += t.amount_minor
         received[str(t.to_member_id)] += t.amount_minor
+        if t.status == "reported_paid":
+            rep_out[str(t.from_member_id)] += t.amount_minor
+            rep_in[str(t.to_member_id)] += t.amount_minor
     rows = [
         {"member_id": m, "paid_minor": paid[m], "share_minor": owed[m], "settled_out_minor": sent[m],
-         "settled_in_minor": received[m], "net_minor": net[m]}
+         "settled_in_minor": received[m], "reported_unconfirmed_out_minor": rep_out[m],
+         "reported_unconfirmed_in_minor": rep_in[m], "net_minor": net[m]}
         for m in ledger.member_ids
     ]
     return net, rows
@@ -120,13 +134,27 @@ def plan_out(ledger_version: int, ledger: Ledger, rows: list[dict], res: Optimiz
             "assumptions": res.assumptions,
         },
         "locked_transfers": [transfer_out(t) for t in ledger.locked],
+        "locked_progress": progress(ledger.locked),
     }
 
 
 def transfer_out(t: SettlementTransfer) -> dict:
     return {"id": str(t.id), "batch_id": str(t.batch_id), "from_member_id": str(t.from_member_id),
             "to_member_id": str(t.to_member_id), "amount_minor": t.amount_minor, "currency": t.currency,
-            "status": t.status, "version": t.version}
+            "status": t.status, "version": t.version, "status_label": STATUS_LABEL[t.status],
+            "is_recipient_confirmed": t.status == "recipient_confirmed"}
+
+
+def progress(transfers: list[SettlementTransfer]) -> dict:
+    out = {"unpaid_count": 0, "unpaid_minor": 0, "reported_unconfirmed_count": 0, "reported_unconfirmed_minor": 0,
+           "recipient_confirmed_count": 0, "recipient_confirmed_minor": 0}
+    key = {"unpaid": "unpaid", "reported_paid": "reported_unconfirmed", "recipient_confirmed": "recipient_confirmed"}
+    for t in transfers:
+        k = key.get(t.status)  # superseded は数えない
+        if k:
+            out[f"{k}_count"] += 1
+            out[f"{k}_minor"] += t.amount_minor
+    return out
 
 
 def batch_out(db: Session, group: Group, batch: SettlementBatch) -> dict:
@@ -156,4 +184,5 @@ def batch_out(db: Session, group: Group, batch: SettlementBatch) -> dict:
             "assumptions": batch.assumptions,
         },
         "transfers": [transfer_out(t) for t in transfers],
+        "progress": progress(transfers),
     }

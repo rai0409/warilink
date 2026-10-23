@@ -1,0 +1,4 @@
+# 例(未導入): 毎日 03:30 JST に期限切れのレシート画像を削除し、DB と画像の整合性を検査する。
+# 導入先で crontab に追加する前に、WARILINK_DATABASE_URL / WARILINK_RECEIPT_STORAGE_DIR と通知先を設定すること。
+# CRON_TZ=Asia/Tokyo
+# 30 3 * * * cd /srv/warilink && WARILINK_ALERT_CMD='logger -t warilink-alert' scripts/warilink_purge_job.sh >> /var/log/warilink/purge.log 2>&1

@@ -18,7 +18,7 @@ from fastapi import Depends, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.tables import Group, Identity, Membership, SessionRow
+from app.models.tables import Group, Identity, Membership, SessionRow, SettlementTransfer
 
 from .config import get_settings
 from .db import get_db
@@ -40,37 +40,66 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
-def create_guest_session(db: Session, response: Response) -> Identity:
+def issue_session(db: Session, response: Response, ident: Identity, assurance_level: str) -> SessionRow:
+    """新しいセッションを発行して Cookie に入れる。
+
+    認証状態が変わるときは必ず新しいトークンにする(セッション固定の防止)。
+    """
     s = get_settings()
-    ident = Identity(kind="guest")
-    db.add(ident)
-    db.flush()
     token = new_token()
-    db.add(SessionRow(token_hash=hash_token(token), identity_id=ident.id, assurance_level="guest",
-                      expires_at=now() + timedelta(days=s.session_ttl_days)))
+    row = SessionRow(token_hash=hash_token(token), identity_id=ident.id, assurance_level=assurance_level,
+                     expires_at=now() + timedelta(days=s.session_ttl_days))
+    db.add(row)
     response.set_cookie(
         s.session_cookie_name, token, max_age=s.session_ttl_days * 86400, httponly=True,
         secure=s.cookie_secure, samesite="lax", path="/",
     )
+    return row
+
+
+def create_guest_session(db: Session, response: Response) -> Identity:
+    ident = Identity(kind="guest")
+    db.add(ident)
+    db.flush()
+    issue_session(db, response, ident, "guest")
     return ident
+
+
+def current_session(request: Request, db: Session) -> SessionRow | None:
+    """有効なセッション行(無効・期限切れ・失効なら None)。"""
+    token = request.cookies.get(get_settings().session_cookie_name)
+    if not token:
+        return None
+    row = db.execute(select(SessionRow).where(SessionRow.token_hash == hash_token(token))).scalar_one_or_none()
+    if row is None or row.revoked_at is not None or row.expires_at <= now():
+        return None
+    return row
+
+
+def clear_session_cookie(response: Response) -> None:
+    s = get_settings()
+    response.delete_cookie(s.session_cookie_name, path="/", secure=s.cookie_secure, httponly=True, samesite="lax")
 
 
 def check_csrf(request: Request) -> None:
     if request.method in UNSAFE_METHODS and request.headers.get(CSRF_HEADER) != "1":
         raise ApiError(403, "CSRF_REJECTED", "不正なリクエストのため拒否しました。ページを再読み込みしてください")
+    if request.method not in UNSAFE_METHODS:
+        return
+    s = get_settings()
     origin = request.headers.get("origin")
-    if request.method in UNSAFE_METHODS and origin and origin not in get_settings().allowed_origins:
+    if origin is None:
+        # ブラウザは状態変更の fetch に Origin を付ける。本番では無い要求も拒否する(fail-closed)
+        if s.environment == "production":
+            raise ApiError(403, "CSRF_REJECTED", "送信元を確認できないため拒否しました。ページを再読み込みしてください")
+        return
+    if origin not in s.allowed_origins:
         raise ApiError(403, "CSRF_REJECTED", "許可されていない送信元からのリクエストです")
 
 
 def optional_identity(request: Request, db: Session = Depends(get_db)) -> Identity | None:
-    token = request.cookies.get(get_settings().session_cookie_name)
-    if not token:
-        return None
-    row = db.execute(
-        select(SessionRow).where(SessionRow.token_hash == hash_token(token))
-    ).scalar_one_or_none()
-    if row is None or row.revoked_at is not None or row.expires_at <= now():
+    row = current_session(request, db)
+    if row is None:
         return None
     ident = db.get(Identity, row.identity_id)
     if ident is None or ident.disabled_at is not None:
@@ -120,3 +149,29 @@ def parse_uuid(value: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as e:
         raise not_found() from e
+
+
+def require_step_up(request: Request, db: Session) -> SessionRow:
+    """本人の再確認(step-up)。直近 `step_up_max_age_seconds` 以内に Passkey で確認したセッションだけを通す。"""
+    sess = current_session(request, db)
+    max_age = timedelta(seconds=get_settings().step_up_max_age_seconds)
+    if sess is None or sess.assurance_level != "passkey" or sess.created_at < now() - max_age:
+        raise ApiError(401, "STEP_UP_REQUIRED", "本人確認のため、もう一度 Passkey で確認してください")
+    return sess
+
+
+def load_transfer_party(db: Session, transfer_id: str, ident: Identity, *,
+                        for_update: bool = False) -> tuple[SettlementTransfer, Membership]:
+    """送金 1 件と、その当事者(支払者または受取人)としての自分のメンバー行。当事者以外には存在を隠す(404)。"""
+    q = select(SettlementTransfer).where(SettlementTransfer.id == parse_uuid(transfer_id))
+    if for_update:
+        q = q.with_for_update()
+    t = db.execute(q).scalar_one_or_none()
+    if t is None:
+        raise not_found()
+    me = db.execute(select(Membership).where(
+        Membership.group_id == t.group_id, Membership.identity_id == ident.id,
+        Membership.status == "active")).scalar_one_or_none()
+    if me is None or me.id not in (t.from_member_id, t.to_member_id):
+        raise not_found()
+    return t, me

@@ -1,12 +1,32 @@
 """実 PostgreSQL(warilink_test)を使う API テスト。DB が無い環境ではスキップではなく失敗させる。"""
 
 import os
+import re
 import uuid
 
 os.environ.setdefault(
     "WARILINK_DATABASE_URL", "postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_test"
 )
 os.environ["WARILINK_ENVIRONMENT"] = "test"
+
+# このテストは開始時に全テーブルを downgrade し、テストごとに TRUNCATE する。
+# 共有・開発・本番の DB に向いていたら、何もせずに中止する(fail-closed)。
+DISPOSABLE_DB = re.compile(r"warilink_test(_[a-z0-9_]+)?")
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _assert_disposable_database(url: str) -> None:
+    from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+    u = make_url(url)
+    if u.host not in LOCAL_HOSTS or not DISPOSABLE_DB.fullmatch(u.database or ""):
+        raise SystemExit(
+            "API テストは使い捨て DB(ローカルの warilink_test / warilink_test_*)でだけ実行できます。"
+            f" 指定された接続先: host={u.host} database={u.database}(downgrade と TRUNCATE を行うため中止しました)"
+        )
+
+
+_assert_disposable_database(os.environ["WARILINK_DATABASE_URL"])
 
 import pytest  # noqa: E402
 from alembic.config import Config  # noqa: E402
@@ -23,6 +43,10 @@ HERE = os.path.dirname(__file__)
 
 @pytest.fixture(scope="session", autouse=True)
 def _migrate():
+    with get_engine().connect() as conn:  # 接続後にも実際の DB 名を確かめる(URL の書き換え・別名対策)
+        actual = conn.execute(text("SELECT current_database()")).scalar_one()
+    if not DISPOSABLE_DB.fullmatch(actual):
+        raise SystemExit(f"接続先 DB が使い捨て DB ではありません: {actual}")
     cfg = Config(os.path.join(HERE, "..", "..", "alembic.ini"))
     cfg.set_main_option("script_location", os.path.join(HERE, "..", "..", "alembic"))
     cfg.set_main_option("sqlalchemy.url", os.environ["WARILINK_DATABASE_URL"])

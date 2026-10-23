@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { ApiProblem, api, errorMessage, type ExpenseBody, type ExpenseDetail, type Member } from "@/lib/api";
-import { formatBp, formatYen, parsePercentBp, parseYen } from "@/lib/format";
+import { CATEGORY_LABEL, formatBp, formatYen, parsePercentBp, parseYen } from "@/lib/format";
 import { useExpensePreview } from "@/lib/use-preview";
 import { IssueList, PreviewShares } from "@/components/PreviewShares";
 
@@ -27,6 +27,8 @@ type Props = {
 type Spec = {
   title: string;
   amount_minor: number;
+  category?: string | null;
+  occurred_on?: string | null;
   payers: { member_id: string; amount_minor: number }[];
   split: { mode: Mode; shares: { member_id: string; value: number }[] };
 };
@@ -42,6 +44,8 @@ function initialState(editing: ExpenseDetail | undefined, members: Member[], me:
   for (const p of spec?.payers ?? []) payerValues[p.member_id] = String(p.amount_minor);
   return {
     title: spec?.title ?? "",
+    category: spec?.category ?? "",
+    occurredOn: spec?.occurred_on ?? "",
     amountText: spec ? String(spec.amount_minor) : "",
     payer: spec?.payers[0]?.member_id ?? me,
     multiPayer: (spec?.payers.length ?? 1) > 1,
@@ -56,6 +60,8 @@ function initialState(editing: ExpenseDetail | undefined, members: Member[], me:
 export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved }: Props) {
   const init = useMemo(() => initialState(editing, members, myMemberId), [editing, members, myMemberId]);
   const [title, setTitle] = useState(init.title);
+  const [category, setCategory] = useState(init.category);
+  const [occurredOn, setOccurredOn] = useState(init.occurredOn);
   const [amountText, setAmountText] = useState(init.amountText);
   const [payer, setPayer] = useState(init.payer);
   const [multiPayer, setMultiPayer] = useState(init.multiPayer);
@@ -85,8 +91,15 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved }:
         .filter((p) => p.amount_minor !== 0);
       if (payers.length === 0) return null;
     }
-    return { title: title.trim(), amount_minor: amount, payers, split: { mode, shares } };
-  }, [amount, title, members, selected, mode, values, payer, multiPayer, payerValues]);
+    return {
+      title: title.trim(),
+      amount_minor: amount,
+      payers,
+      split: { mode, shares },
+      category: (category || null) as ExpenseBody["category"],
+      occurred_on: occurredOn || null,
+    };
+  }, [amount, title, members, selected, mode, values, payer, multiPayer, payerValues, category, occurredOn]);
 
   const { preview, error: previewError, pending } = useExpensePreview(publicId, body, expenseId);
 
@@ -107,6 +120,8 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved }:
         const saved = expenseId;
         const fresh = initialState(undefined, members, myMemberId);
         setTitle(fresh.title);
+        setCategory("");
+        setOccurredOn("");
         setAmountText(fresh.amountText);
         setValues({});
         setPayerValues({});
@@ -134,6 +149,21 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved }:
       <label htmlFor="e-amount">金額(円)</label>
       <input id="e-amount" inputMode="numeric" value={amountText} onChange={(e) => setAmountText(e.target.value)} />
       {amountText && amount === null && <p className="error">金額は整数の円で入力してください</p>}
+      <div className="row">
+        <span>
+          <label htmlFor="e-category">カテゴリ(任意)</label>
+          <select id="e-category" value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">未分類</option>
+            {Object.entries(CATEGORY_LABEL).map(([v, l]) => (
+              <option key={v} value={v}>{l}</option>
+            ))}
+          </select>
+        </span>
+        <span>
+          <label htmlFor="e-date">日付(任意)</label>
+          <input id="e-date" type="date" value={occurredOn} onChange={(e) => setOccurredOn(e.target.value)} />
+        </span>
+      </div>
 
       <fieldset>
         <legend>立て替えた人</legend>

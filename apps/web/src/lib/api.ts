@@ -69,3 +69,16 @@ export async function ensureGuest(): Promise<void> {
 export function errorMessage(e: unknown): string {
   return e instanceof ApiProblem ? e.message : FALLBACK_MESSAGE;
 }
+
+export type Me = Schemas["IdentityOut"];
+export type SessionState = Schemas["SessionStateOut"];
+export type Passkey = Schemas["PasskeyOut"];
+export type PasskeyOptions = Schemas["OptionsOut"];
+
+export type Destination = Schemas["DestinationOut"];
+export type DestinationReveal = Schemas["DestinationRevealOut"];
+export type DestinationInput = Schemas["DestinationIn"];
+export type PayerDestination = Schemas["PayerDestinationOut"];
+
+export type ExpenseSearch = Schemas["ExpenseSearchOut"];
+export type GroupStats = Schemas["GroupStatsOut"];

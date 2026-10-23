@@ -10,6 +10,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@simplewebauthn/browser':
+        specifier: 14.0.0
+        version: 14.0.0
       '@warilink/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -281,6 +284,9 @@ packages:
   '@redocly/openapi-core@1.34.21':
     resolution: {integrity: sha512-yXMiBFYJbP5JOaxPzx2tJhK+v8h2Wu2uhad1Ro6GzVT8E3F4GcQ7sbLPJ9w4zvGjfxroD0bIh5B0pDtnLV/qUA==}
     engines: {node: '>=18.17.0', npm: '>=9.5.0'}
+
+  '@simplewebauthn/browser@14.0.0':
+    resolution: {integrity: sha512-1odWVqeEBTl7lJ9zMKLEsmTlnyrDO5iRcTvfMKKk1WThUnp/i8JJdffdj2icP+tty159s4PgwE3BiMoEW9NFow==}
 
   '@swc/helpers@0.5.23':
     resolution: {integrity: sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw==}
@@ -694,6 +700,8 @@ snapshots:
       yaml-ast-parser: 0.0.43
     transitivePeerDependencies:
       - supports-color
+
+  '@simplewebauthn/browser@14.0.0': {}
 
   '@swc/helpers@0.5.23':
     dependencies:

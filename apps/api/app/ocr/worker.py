@@ -21,7 +21,8 @@ from app.ocr import images, jobs
 from app.ocr.parser import PARSER_VERSION, parse_receipt
 from app.ocr.tokens import OcrAdapter
 
-PREPROCESS_VERSION = "cv-0.1.0"
+# cv-0.2.0: 任意の傾き補正(既定は無効、WARILINK_OCR_DESKEW=1)と、BBox の元の向きへの逆変換。quality に角度を記録
+PREPROCESS_VERSION = "cv-0.2.0"
 log = logging.getLogger("warilink.ocr")
 
 
@@ -31,7 +32,26 @@ class ImageRejected(Exception):
         self.code = code
 
 
-def run_pipeline(adapter: OcrAdapter, data: bytes, *, low_confidence: float) -> dict[str, Any]:
+def deskew_enabled() -> bool:
+    """傾き補正は既定で無効。実レシートの評価で改善を確かめてから有効にする(docs/OCR_PIPELINE.md)。"""
+    return os.environ.get("WARILINK_OCR_DESKEW", "0") == "1"
+
+
+def _unrotate(draft: dict[str, Any], tokens: list[dict[str, Any]], inverse: Any, size: list[int]) -> None:
+    """傾き補正した画像で読んだ座標を、保存した画像(回転していない)の座標へ戻す。画面の枠は元の向きで重なる。"""
+    from app.ocr.preprocess import map_bbox  # noqa: PLC0415
+
+    w, h = size
+    for t in tokens:
+        t["bbox"] = map_bbox(t["bbox"], inverse, w, h)
+    for key in ("items", "adjustments", "lines"):
+        for row in draft.get(key, []):
+            if row.get("bbox"):
+                row["bbox"] = map_bbox(row["bbox"], inverse, w, h)
+
+
+def run_pipeline(adapter: OcrAdapter, data: bytes, *, low_confidence: float,
+                 deskew: bool | None = None) -> dict[str, Any]:
     """画像 → 前処理 → 認識 → 解析。DB に依存しない(CLI・評価からも使う)。"""
     from app.ocr.preprocess import decode, prepare  # noqa: PLC0415  (OpenCV はワーカーにのみ入れる)
 
@@ -39,18 +59,22 @@ def run_pipeline(adapter: OcrAdapter, data: bytes, *, low_confidence: float) -> 
     img = decode(data)
     if img is None:
         raise ImageRejected("IMAGE_UNREADABLE")
-    prep = prepare(img)
+    prep = prepare(img, deskew=deskew_enabled() if deskew is None else deskew)
     t1 = time.perf_counter()
     if prep.rejected:
         raise ImageRejected(prep.warnings[0]["code"])
     tokens = adapter.recognize(prep.image)
     t2 = time.perf_counter()
+    # 行のまとめ方は補正後(水平)の座標で行い、保存・表示する座標は元の向きへ戻す
     draft = parse_receipt(tokens, low_confidence=low_confidence).to_json()
     t3 = time.perf_counter()
+    token_json = [t.to_json() for t in tokens]
+    if prep.inverse is not None:
+        _unrotate(draft, token_json, prep.inverse, prep.quality["deskew_size"])
     draft["warnings"] = prep.warnings + draft["warnings"]
-    draft["image_scale"] = prep.scale  # bbox は前処理後の座標。元画像へは 1/scale 倍
+    draft["image_scale"] = prep.scale  # bbox は縮小後・元の向きの座標。元画像へは 1/scale 倍
     return {
-        "tokens": [t.to_json() for t in tokens], "draft": draft, "quality": prep.quality,
+        "tokens": token_json, "draft": draft, "quality": {**prep.quality, "preprocess_version": PREPROCESS_VERSION},
         "preprocess_ms": (t1 - t0) * 1000, "recognize_ms": (t2 - t1) * 1000, "parse_ms": (t3 - t2) * 1000,
     }
 

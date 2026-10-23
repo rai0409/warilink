@@ -149,6 +149,8 @@ def add_members(public_id: str, body: MembersAdd, db: Session = Depends(get_db),
     start = _next_position(db, acc.group)
     for i, n in enumerate(body.names):
         db.add(Membership(group_id=acc.group.id, display_name=n, role="member", position=start + i))
+    db.add(AuditEvent(actor_identity_id=ident.id, action="group.members.add", target_type="group",
+                      target_id=str(acc.group.id), safe_metadata={"count": len(body.names)}))
     db.flush()
     out = group_out(db, acc.group, acc.member)
     db.commit()
@@ -173,13 +175,19 @@ def create_invite(public_id: str, body: InviteCreate, db: Session = Depends(get_
     return InviteOut(token=token, expires_at=inv.expires_at.isoformat(), max_uses=inv.max_uses)
 
 
-def _valid_invite(db: Session, token: str, *, for_update: bool = False) -> Invitation:
+def _invite_error() -> ApiError:
+    return ApiError(404, "INVITE_INVALID", "招待URLが無効か、有効期限が切れています")
+
+
+def _valid_invite(db: Session, token: str, *, for_update: bool = False, check_uses: bool = True) -> Invitation:
     q = select(Invitation).where(Invitation.token_hash == hash_token(token))
     if for_update:
         q = q.with_for_update()
     inv = db.execute(q).scalar_one_or_none()
-    if inv is None or inv.revoked_at is not None or inv.expires_at <= now() or inv.uses >= inv.max_uses:
-        raise ApiError(404, "INVITE_INVALID", "招待URLが無効か、有効期限が切れています")
+    if inv is None or inv.revoked_at is not None or inv.expires_at <= now():
+        raise _invite_error()
+    if check_uses and inv.uses >= inv.max_uses:
+        raise _invite_error()
     return inv
 
 
@@ -200,12 +208,15 @@ def preview_invite(token: str, db: Session = Depends(get_db), ident: Identity = 
 @router.post("/invites/{token}/join", response_model=GroupOut)
 def join(token: str, body: JoinRequest, db: Session = Depends(get_db),
          ident: Identity = Depends(current_identity)):
-    inv = _valid_invite(db, token, for_update=True)
+    # 使用回数の判定は「参加済みかどうか」を見た後に行う(参加済みの本人の再アクセスは回数を消費しない)
+    inv = _valid_invite(db, token, for_update=True, check_uses=False)
     group = db.execute(select(Group).where(Group.id == inv.group_id).with_for_update()).scalar_one()
     existing = db.execute(select(Membership).where(
         Membership.group_id == group.id, Membership.identity_id == ident.id)).scalar_one_or_none()
     if existing is not None:
         return group_out(db, group, existing)  # 参加済みなら冪等に返す(使用回数は増やさない)
+    if inv.uses >= inv.max_uses:
+        raise _invite_error()
 
     if (body.claim_member_id is None) == (body.new_member_name is None):
         raise ApiError(422, "VALIDATION_ERROR", "参加する名前を1つ選ぶか、新しい名前を入力してください")

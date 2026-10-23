@@ -60,3 +60,19 @@ export function parsePercentBp(input: string): number | null {
 export function formatBp(bp: number): string {
   return (bp / 100).toString();
 }
+
+/** 支出のカテゴリ(未選択 = 未分類)。サーバーの Category と同じ値 */
+export const CATEGORY_LABEL: Record<string, string> = {
+  food: "食事",
+  drinks: "飲み会",
+  groceries: "食材・買い物",
+  transport: "交通",
+  lodging: "宿泊",
+  entertainment: "レジャー",
+  daily: "日用品",
+  other: "その他",
+};
+
+export function categoryLabel(c: string | null | undefined): string {
+  return c ? (CATEGORY_LABEL[c] ?? c) : "未分類";
+}

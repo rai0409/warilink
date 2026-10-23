@@ -16,7 +16,8 @@ from typing import Any
 
 from app.ocr.tokens import OcrToken
 
-PARSER_VERSION = "rule-ja-0.1.0"
+# 0.2.0: 途中の合計で止めない(全行から合計の候補を集める)・ポイントの付与/利用/充当の区別・返品・印字点数の照合
+PARSER_VERSION = "rule-ja-0.2.0"
 LOW_CONFIDENCE = 0.90
 
 # ---------------------------------------------------------------- 正規化・行の組み立て
@@ -123,9 +124,15 @@ def find_quantity(text: str) -> tuple[int | None, int | None]:
 # ---------------------------------------------------------------- 行の役割
 
 _KEYWORDS: list[tuple[str, re.Pattern[str]]] = [
-    ("ignore", re.compile(r"お?預[りか]|お?釣|釣銭|現計|クレジット|カード|電子マネー|交通系|paypay|QR|"
-                          r"ポイント|残高|担当|レジ|登録番号|TEL|電話|〒|https?|領収|点数|対象|\d{1,2}:\d{2}|"
-                          r"内訳|伝票|No\.|お買上|ありがとう", re.I)),
+    # ポイント: 利用・充当(金額が動く)を先に判定し、付与・残高などはそのあと無視する
+    ("points_used", re.compile(r"ポイント.*(?:利用|使用|充当|払|値引|割引)|(?:利用|使用)\s*(?:ポイント|P\b)")),
+    ("ignore", re.compile(r"ポイント|担当|レジ|登録番号|TEL|電話|〒|https?|領収|対象|\d{1,2}:\d{2}|"
+                          r"内訳|伝票|No\.|ありがとう", re.I)),
+    # 支払手段・預り・釣銭(合計より後に来る。ここより後の行は明細にしない)
+    ("payment", re.compile(r"お?預[りか]|お?釣|釣銭|現計|現金|クレジット|カード|電子マネー|交通系|paypay|QR|"
+                           r"支払方法", re.I)),
+    ("count", re.compile(r"点数|(?<![\d,])\d{1,3}\s*点\s*$")),
+    ("refund", re.compile(r"返品|返金|取消")),
     ("subtotal", re.compile(r"小\s*計|税抜\s*合計")),
     ("tax_inclusive", re.compile(r"内\s*(?:消費)?税|\(内")),
     ("tax", re.compile(r"消費税|外\s*税|税\s*額|^税\b|^\(?税\s*\d+%|税\s*\(?\d+%")),
@@ -134,6 +141,7 @@ _KEYWORDS: list[tuple[str, re.Pattern[str]]] = [
     ("discount", re.compile(r"値\s*引|割\s*引|値下|お?値引き|割引")),
     ("service_charge", re.compile(r"サービス料|チャージ|席料|深夜料")),
 ]
+_COUNT = re.compile(r"(\d{1,3})\s*点")
 _DATE = re.compile(r"(20\d{2})\s*[年/.-]\s*(\d{1,2})\s*[月/.-]\s*(\d{1,2})")
 _RATE = re.compile(r"(8|10)\s*%")
 
@@ -195,6 +203,7 @@ class DraftAdjustment:
     needs_review: bool
     bbox: list[int]
     source_lines: list[int]
+    reasons: list[str] = field(default_factory=list)  # POINT_USAGE / REFUND / LOW_CONFIDENCE / SCOPED_DISCOUNT
 
 
 @dataclass
@@ -210,27 +219,36 @@ class ReceiptDraft:
     difference_minor: int | None  # total − (items + adjustments)。0 以外なら画面で訂正が必要
     warnings: list[dict[str, Any]] = field(default_factory=list)
     lines: list[dict[str, Any]] = field(default_factory=list)  # 行ごとの判定(訂正・評価用)
+    # 合計の候補(位置順)。最終合計は「支払より前の最後の候補」。複数あれば MULTIPLE_TOTALS で知らせる
+    total_candidates: list[dict[str, Any]] = field(default_factory=list)
+    item_count_printed: int | None = None  # 「お買上点数 3点」など、レシートに印字された点数
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
 
 
 def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDENCE) -> ReceiptDraft:
+    """行を上から順に読み、合計の候補はすべて集める(途中の「合計」で読み飛ばしを始めない)。
+
+    最終合計 = 支払(お預り・現金・カード等)より前の最後の合計候補。それより後の商品・値引は明細にせず警告する。
+    """
     lines = group_lines(tokens)
     items: list[DraftItem] = []
     adjs: list[DraftAdjustment] = []
     warnings: list[dict[str, Any]] = []
     line_log: list[dict[str, Any]] = []
-    subtotal: int | None = None
-    total: int | None = None
-    total_line: int | None = None
+    subtotals: list[tuple[int, int]] = []  # (金額, 行)
+    total_cands: list[dict[str, Any]] = []
     inclusive_tax_seen = False
     rates_seen: set[str] = set()
     store_name: str | None = None
     purchased_on: str | None = None
+    item_count_printed: int | None = None
     pending_name: Line | None = None  # 金額が次の行にある商品名
     pending_keyword: Line | None = None  # 金額が次の行にある「小計」「合計」など
-    after_total = False
+    payment_seen = False  # 合計の後に支払の行が出た(以後は明細にしない)
+    points_as_payment = False
+    after_payment_lines: list[int] = []
 
     def add_item(name: str, src: list[Line], amount: Money, qty: int | None, unit: int | None) -> None:
         reasons: list[str] = []
@@ -263,10 +281,34 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
         line_log.append({"index": ln.index, "text": text, "role": role, "score": round(ln.score, 4),
                          "bbox": list(ln.bbox), "amount": amount.value if amount else None})
 
+        if role == "count":
+            if item_count_printed is None and (c := _COUNT.search(text)):
+                item_count_printed = int(c.group(1))
+            pending_name = pending_keyword = None
+            continue
+        if role == "payment":
+            if total_cands:
+                payment_seen = True
+            pending_name = pending_keyword = None
+            continue
+        if payment_seen:
+            # 支払より後: 合計・商品として使わない(ポイント払い・商品らしい行は警告だけ)
+            if role == "points_used":
+                points_as_payment = True
+            elif role == "item" and amount is not None and amount.explicit:
+                after_payment_lines.append(ln.index)
+            line_log[-1]["after_payment"] = True
+            pending_name = pending_keyword = None
+            continue
+        if role == "points_used" and total_cands and (amount is None or amount.value > 0):
+            # 合計の後のポイント充当は支払手段。割り勘の金額は変えない
+            points_as_payment = True
+            pending_name = pending_keyword = None
+            continue
         if role == "text":
             if store_name is None and not items and amount is None:
                 store_name = text
-            elif not after_total:
+            else:
                 qty, unit = find_quantity(text)
                 if qty is not None and items and items[-1].source_lines[-1] == ln.index - 1:
                     # 「2個 x @650」のように数量だけの行 → 直前の商品の数量
@@ -279,7 +321,7 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
                 else:
                     pending_name = ln
             continue
-        if role in ("ignore", "date") or after_total:
+        if role in ("ignore", "date"):
             pending_name = pending_keyword = None
             continue
         if amount is None:
@@ -315,28 +357,51 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
                 src = [pending_name, ln]
             add_item(name, src, amount, qty, unit)
         elif role == "subtotal":
-            subtotal = amount.value
+            subtotals.append((amount.value, ln.index))
         elif role == "total":
-            total, total_line, after_total = amount.value, ln.index, True
+            total_cands.append({"value": amount.value, "line": ln.index, "text": text})
         elif role == "tax_inclusive":
             inclusive_tax_seen = True
-        elif role in ("tax", "discount", "coupon", "service_charge"):
+        elif role in ("tax", "discount", "coupon", "service_charge", "points_used", "refund"):
             value = amount.value
-            if role in ("discount", "coupon"):
+            kind = role
+            reasons: list[str] = []
+            if role == "points_used":
+                # 合計の前に引かれたポイント: 割引として下書きに入れるが、誰の負担を減らすかは利用者が決める
+                kind, reasons = "discount", ["POINT_USAGE"]
+            elif role == "refund":
+                kind, reasons = "discount", ["REFUND"]
+            if kind in ("discount", "coupon"):
                 value = -abs(value)
             rate = _RATE.search(text)
             # 商品の直後の値引きは、その商品だけの値引きとして扱う
             scope = None
             right_after_item = bool(items) and items[-1].source_lines[-1] == ln.index - 1
-            if role in ("discount", "coupon") and right_after_item and subtotal is None:
+            if role in ("discount", "coupon") and right_after_item and not subtotals:
                 scope = [items[-1].id]
+                reasons.append("SCOPED_DISCOUNT")
+            if ln.score < low_confidence:
+                reasons.append("LOW_CONFIDENCE")
             adjs.append(DraftAdjustment(
-                id=f"ocr-a{len(adjs) + 1}", kind=role, label=_name_part(text, amount) or role, amount_minor=value,
+                id=f"ocr-a{len(adjs) + 1}", kind=kind, label=_name_part(text, amount) or kind, amount_minor=value,
                 tax_group=rate.group(1) if rate and role == "tax" else None, scope_item_ids=scope,
-                confidence=round(ln.score, 4), needs_review=ln.score < low_confidence or scope is not None,
-                bbox=list(ln.bbox), source_lines=[ln.index],
+                confidence=round(ln.score, 4), needs_review=bool(reasons),
+                bbox=list(ln.bbox), source_lines=[ln.index], reasons=reasons,
             ))
         pending_name = None
+
+    # 最終合計と、それより後の行
+    total = total_cands[-1]["value"] if total_cands else None
+    total_line = total_cands[-1]["line"] if total_cands else None
+    late_items: list[DraftItem] = []
+    late_adjs: list[DraftAdjustment] = []
+    if total_line is not None:
+        late_items = [i for i in items if i.source_lines[0] > total_line]
+        items = [i for i in items if i.source_lines[0] <= total_line]
+        late_adjs = [a for a in adjs if a.source_lines[0] > total_line and a.kind != "tax"]
+        adjs = [a for a in adjs if not (a.source_lines[0] > total_line and a.kind != "tax")]
+    before_total = [v for v, i in subtotals if total_line is None or i < total_line]
+    subtotal = before_total[-1] if before_total else None
 
     # 軽減税率の記号がある場合、8% と 10% の両方の税行があれば記号なしの商品を 10% とみなす
     if {"8", "10"} <= rates_seen and any(i.tax_group == "8" for i in items):
@@ -369,6 +434,11 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
     elif difference:
         warnings.append({"code": "TOTAL_MISMATCH", "message": "読み取った明細の合計がレシートの合計と一致しません",
                          "difference": difference})
+    if len({c["value"] for c in total_cands}) > 1:
+        warnings.append({"code": "MULTIPLE_TOTALS",
+                         "message": ("合計らしい金額が複数あります。最後の合計を使いました。"
+                                    "レシートの合計と見比べてください"),
+                         "candidates": [c["value"] for c in total_cands]})
     if subtotal is not None and tax_mode == "exclusive" and subtotal != items_sum + sum(
         a.amount_minor for a in adjs if a.kind in ("discount", "coupon") and a.scope_item_ids
     ):
@@ -378,11 +448,29 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
         warnings.append({"code": "NO_ITEMS", "message": "商品の行を読み取れませんでした"})
     if any(i.needs_review for i in items):
         warnings.append({"code": "ITEMS_NEED_REVIEW", "message": "確認が必要な商品があります"})
-    if total_line is not None and any(i.source_lines[0] > total_line for i in items):
-        warnings.append({"code": "ITEM_AFTER_TOTAL", "message": "合計より後に商品らしい行があります"})
+    if late_items or after_payment_lines:
+        warnings.append({"code": "ITEM_AFTER_TOTAL",
+                         "message": ("合計より後に商品らしい行があります。明細には入れていません。"
+                                    "レシートと見比べてください"),
+                         "lines": sorted([i.source_lines[0] for i in late_items] + after_payment_lines)})
+    if late_adjs:
+        warnings.append({"code": "ADJUSTMENT_AFTER_TOTAL",
+                         "message": "合計より後に値引などの行があります。明細には入れていません",
+                         "lines": [a.source_lines[0] for a in late_adjs]})
+    if points_as_payment or any("POINT_USAGE" in a.reasons for a in adjs):
+        warnings.append({"code": "POINT_USAGE_AMBIGUOUS",
+                         "message": ("ポイントの利用があります。割り勘の金額や立て替えた額に"
+                                    "どう反映するか確認してください")})
+    if item_count_printed is not None and sum(i.quantity for i in items) != item_count_printed:
+        warnings.append({"code": "ITEM_COUNT_MISMATCH",
+                         "message": f"レシートの点数({item_count_printed}点)と読み取った商品の数が一致しません。"
+                                    "読み落としがないか確認してください",
+                         "printed": item_count_printed, "read": sum(i.quantity for i in items)})
 
     return ReceiptDraft(
         parser_version=PARSER_VERSION, store_name=store_name, purchased_on=purchased_on, items=items,
         adjustments=adjs, subtotal_minor=subtotal, total_minor=total, tax_mode=tax_mode,
         difference_minor=difference, warnings=warnings, lines=line_log,
+        total_candidates=[{"value": c["value"], "line": c["line"]} for c in total_cands],
+        item_count_printed=item_count_printed,
     )

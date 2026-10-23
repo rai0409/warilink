@@ -145,3 +145,115 @@
 | E2E: 本物のワーカーで合成レシートを読み取り→下書きの値を確認→負担者を選んで登録→合計一致→枠が減る / 不良画像は失敗表示・返還・手入力へ / 確認画面のアクセシビリティ | `apps/web/e2e/ocr.spec.ts` |
 
 合成データの結果は実レシートの精度を表さない(`docs/OCR_PIPELINE.md §8`)。linux/amd64 での動作は未確認。
+
+
+## 運用ジョブの検証(2026-10-20、P05)
+
+| 対象 | テスト・手順 | 実行環境 |
+|---|---|---|
+| 期限切れ画像の削除(dry-run・期限内の保護・二度実行・生の文字の削除・410) | `tests/api/test_receipts.py::test_purge_dry_run_retention_idempotent_and_scrubs_raw_text` | 使い捨て DB `warilink_test` |
+| 一部失敗の再試行・終了コード 1 | `test_purge_partial_failure_is_retried_and_reported` | 同上 |
+| DB と画像の不一致検出(終了コード 2) | `test_check_storage_detects_missing_and_orphan_files` | 同上 |
+| 失敗時の通知(モック) | `WARILINK_ALERT_CMD="cat >> file" scripts/warilink_purge_job.sh` を到達できない DB で実行 | 手動 |
+| バックアップ→復元→検証→片付け | `.venv/bin/python scripts/warilink_backup.py drill --workdir 空のディレクトリ` | `warilink_restore_*` の使い捨て DB(作成して最後に削除) |
+| 復元の拒否(共有 DB 名・既存 DB・空でない画像ディレクトリ・改ざんしたダンプ/画像) | `warilink_backup.py restore` を各条件で実行 | 手動 |
+
+本番の保管先・暗号化・切り戻しは未検証。
+
+
+## CI とリリースゲート(2026-10-20、P06)
+
+`.github/workflows/ci.yml`(**GitHub 上では未実行**。push 権限がないため後日の PR で確認する)
+
+| ジョブ | 内容 | DB |
+|---|---|---|
+| `api` | ruff・mypy・pytest(実モデルのテストは除外) | ジョブ専用のサービスコンテナ `warilink_test` |
+| `web` | 型チェック・本番ビルド | なし |
+| `e2e`(重い。`api`・`web` の成功後) | 本物の PaddleOCR の結合テスト(`pytest -m ocr`)と Playwright E2E(モバイル・デスクトップ、実 API・実 DB・実ワーカー) | ジョブ専用のサービスコンテナ `warilink_e2e` |
+
+- 起動条件: `main` への push、すべての PR、手動。同じ PR の古い実行は取り消す(push と PR の二重実行をやめた。PR では毎回実行される)。
+- 失敗を隠さない: E2E の `retries: 0`、CI では `test.only` を禁止(`forbidOnly`)。失敗時は Playwright のレポートを 7 日保存。
+- **破壊的なテストの保護(fail-closed)**:
+  - `tests/api/conftest.py` は、接続先がローカル(localhost / 127.0.0.1 / ::1)の `warilink_test` / `warilink_test_*` でなければ、
+    downgrade・TRUNCATE の前に中止する。接続後にも `current_database()` を確かめる。
+  - `playwright.config.ts` は、`E2E_DATABASE_URL` がローカルの `warilink_e2e` / `warilink_e2e_*` でなければ起動しない。
+  - 残るリスク: 別のローカル PostgreSQL(例: 他プロジェクトのコンテナ)に偶然 `warilink_test` という DB があると防げない。
+- linux/amd64 での PaddleOCR の動作は CI の初回実行で確かめる(ローカルでは arm64 のみ確認済み)。
+
+
+## OCR パーサーの回帰(2026-10-20、P10)
+
+| 対象 | テスト |
+|---|---|
+| 途中の合計で商品を落とさない・候補の記録・支払後の合計を使わない・食い違う合計は補正せず警告 | `tests/ocr/test_parser.py`(P10 の節) |
+| 合計後の商品・印字点数との照合・ポイントの付与/利用/充当・返品・小計 | 同上 |
+| 性質テスト: 途中の合計を挟んでも全商品を読む / 1 行の読み落としは必ず警告になる(点数が印字されている場合) | `tests/ocr/test_synthetic_roundtrip.py` |
+
+修正前のパーサーで失敗した記録は、作業時の証跡(gate.json と before_fix.log)に残した。
+
+
+## OCR 評価ゲート(2026-10-21、P12)
+
+| 対象 | テスト |
+|---|---|
+| 0 件 → blocked、件数不足 → insufficient、未測定・古い形式 → blocked | `tests/ocr/test_benchmark_gates.py`、`test_evaluate_and_corrections.py` |
+| 種類違いの同額 → 不一致、税区分の違い → structure_exact のみ不一致 | 同上 |
+| 同じ合成データで before/after: 同じ → accepted、商品 1 行の欠落 → rejected | 同上 |
+| データ・ラベルの変更 → incomparable、モデルとパーサーの同時変更 → incomparable | 同上 |
+| 古いキャッシュ・別モデルの混在・画像の変更 → blocked | 同上 |
+| 出所の区分と、実レシートの同意・分割の要件 | 同上 |
+| CLI の終了コード(0 / 2 / 3) | 同上 |
+
+実レシートでの評価(Stage C)は未実施。
+
+
+## 受入判定(P13、2026-10-21、ブランチ `feat/commercial-hardening` HEAD 5b25186 時点)
+
+### 実測したテスト(ローカル macOS arm64、使い捨て DB `warilink_test` / `warilink_e2e` / `warilink_restore_*`)
+
+| 対象 | コマンド | 結果 |
+|---|---|---|
+| ruff・mypy・API/ドメイン/OCR の pytest | `make test` | 198 passed(実モデル 1 件は除外) |
+| 本物の PaddleOCR の結合テスト | `make test-ocr` | 1 passed |
+| Web 型チェック・本番ビルド | `pnpm web:typecheck && pnpm web:build` | 成功 |
+| E2E(モバイル・デスクトップ、実 API・実 DB・実ワーカー、4 並列) | `make e2e` | 22 passed(精算・権限・Passkey・振込先・検索/集計・OCR・アクセシビリティ) |
+| バックアップ → 復元 → 検証 → 片付け | `scripts/warilink_backup.py drill` | PASS |
+| 合成データの OCR ベンチマーク(eval-0.2.0) | `cli evaluate`(合成 hard 30 枚) | exact 1.00(CI 0.89–1.00)、structure_exact 0.77(CI 0.59–0.88) |
+| 静的監査 | `git grep` の秘密情報パターン・`.env` の追跡・実画像の追跡 | いずれも 0 件 |
+
+- E2E は、ホストがスワップ 10GB・load 77〜195 の間(P10・P11 の作業中)に、OCR と無関係の画面で 5 秒の待ち時間切れが
+  断続的に出た。負荷が下がった状態(load 3.6)では 22/22 で通過。CI の専用ランナーでの安定性は未確認。
+- `git diff --check`(基準 f465b2d からの差分)で、P07・P08 の新規ファイル 2 件の末尾の空行を検出(この判定のあと別コミットで修正)。
+
+### 未実行・未確認(GO の根拠に含めない)
+
+- GitHub Actions(push していないため一度も実行していない)。linux/amd64 での PaddleOCR。
+- **日本語の実レシートでの精度(100 → 500 → 1000 枚の holdout)**: データ・同意・権利の確認がなく未実施。
+- 実際の認証器(iOS / Android / Windows Hello)と端末間の同期での Passkey、本番の逆プロキシ・TLS・Cookie、KMS による鍵管理、
+  バックアップの暗号化と外部保管、負荷試験、侵入試験、WCAG の手動監査。
+- 銀行連携(本番 provider)・送金・多通貨・オフライン同期・定期支出・広告・課金は**対象外(未実装)**。
+
+### 依存とライセンス(SBOM の要点)
+
+- Python 107 パッケージ: LGPL は psycopg / psycopg-binary(既知)、crc32c(bce-python-sdk 経由)、python-bidi(PaddleX 経由)。いずれも動的利用。
+  third_party_notices に未記載の推移的依存(crc32c・python-bidi)がある。
+- Node(本番依存): MIT / Apache-2.0 / ISC / BSD が中心。`@img/sharp-libvips`(LGPL-3.0、Next.js の画像処理)、`caniuse-lite`(CC-BY-4.0)。
+- このリポジトリ自体は RAI NON-COMMERCIAL SOURCE-AVAILABLE LICENSE。**商用公開には権利者との別途の合意が必要**。
+
+### 採点(社内の判定基準。実測ではない項目は満点にしない)
+
+| 項目 | 配点 | 点 | 根拠 |
+|---|---|---|---|
+| 正確性・データ整合 | 25 | 21 | 整数円・配分和・残高和 0・厳密解のオラクル・申告/受取確認の区別を自動テストで確認。CI と本番相当の負荷では未確認 |
+| 認証・セキュリティ・プライバシー | 25 | 18 | Passkey(リプレイ・Origin・RP・UV・署名回数)、権限表と IDOR、振込先の暗号化と支払者限定、本番設定の fail-closed を確認。KMS・侵入試験・認証 API の流量制限・IP 単位の制限が無い |
+| OCR の構造解析・実画像の精度・訂正 | 20 | 8 | 静かな誤りの修正と評価ゲートは実装。精度は合成のみで、実レシートは未測定。税区分の構造一致 0.77 の残課題 |
+| CI・復旧・運用 | 20 | 12 | 隔離 DB の安全装置、画像削除・整合性検査、バックアップ訓練は実測。CI は未実行、E2E は高負荷で不安定、本番の保管・切り戻しは未設計 |
+| UX・競合の中核機能 | 10 | 6 | カテゴリ・検索・集計・振込先表示を追加。多通貨・オフライン・定期支出が無く、操作数・時間の比較は未測定 |
+| **合計** | 100 | **65** | |
+
+### 判定
+
+- **商用公開: NO_GO**。理由: 実レシートの精度が未測定、CI が一度も通っていない、鍵管理(KMS)とバックアップの暗号化が未実装、
+  リポジトリのライセンスが非商用(商用利用の合意が未確認)。
+- **限定的な内部検証(合成データ・身内のテスト)の継続: CONDITIONAL**。条件: PR で CI(api / web / e2e)を通す、
+  OCR は手入力と並行して使い下書きを必ず確認する、実レシートの評価データ(同意・verified・holdout)を用意する。

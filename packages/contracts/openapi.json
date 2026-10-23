@@ -5,6 +5,261 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/v1/auth/passkeys/register/options": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Register Options",
+        "operationId": "register_options_api_v1_auth_passkeys_register_options_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterOptionsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptionsOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/passkeys/register/verify": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Register Verify",
+        "operationId": "register_verify_api_v1_auth_passkeys_register_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStateOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/passkeys/login/options": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Login Options",
+        "operationId": "login_options_api_v1_auth_passkeys_login_options_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptionsOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/passkeys/login/verify": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Login Verify",
+        "operationId": "login_verify_api_v1_auth_passkeys_login_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStateOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/passkeys": {
+      "get": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "List Passkeys",
+        "operationId": "list_passkeys_api_v1_auth_passkeys_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PasskeyOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Passkeys Api V1 Auth Passkeys Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/passkeys/{passkey_id}": {
+      "delete": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Revoke Passkey",
+        "operationId": "revoke_passkey_api_v1_auth_passkeys__passkey_id__delete",
+        "parameters": [
+          {
+            "name": "passkey_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Passkey Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStateOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Logout",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/sessions/revoke-others": {
+      "post": {
+        "tags": [
+          "identity",
+          "auth"
+        ],
+        "summary": "Revoke Other Sessions",
+        "description": "紛失した端末などに残ったログインを、この端末以外すべて失効させる。",
+        "operationId": "revoke_other_sessions_api_v1_auth_sessions_revoke_others_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStateOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/identity/guest": {
       "post": {
         "tags": [
@@ -462,6 +717,284 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ExpenseDetailOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/expenses/search": {
+      "get": {
+        "tags": [
+          "expenses"
+        ],
+        "summary": "Search Expenses",
+        "description": "グループ内の有効な支出だけを検索する(他のグループの支出は対象にならない)。",
+        "operationId": "search_expenses_api_v1_groups__public_id__expenses_search_get",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "food",
+                    "drinks",
+                    "groceries",
+                    "transport",
+                    "lodging",
+                    "entertainment",
+                    "daily",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "name": "uncategorized",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Uncategorized"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "payer_member_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Payer Member Id"
+            }
+          },
+          {
+            "name": "created_by_me",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Created By Me"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "date_desc",
+                "date_asc",
+                "amount_desc",
+                "amount_asc"
+              ],
+              "type": "string",
+              "default": "date_desc",
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 30,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpenseSearchOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/expenses/stats": {
+      "get": {
+        "tags": [
+          "expenses"
+        ],
+        "summary": "Group Stats",
+        "description": "グループ内の集計(このグループのメンバーへの表示のためだけに計算する。広告・外部提供には使わない)。",
+        "operationId": "group_stats_api_v1_groups__public_id__expenses_stats_get",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupStatsOut"
                 }
               }
             }
@@ -1179,58 +1712,6 @@
         }
       }
     },
-    "/api/v1/groups/{public_id}/receipts": {
-      "post": {
-        "tags": [
-          "receipts"
-        ],
-        "summary": "Upload Receipt",
-        "operationId": "upload_receipt_api_v1_groups__public_id__receipts_post",
-        "parameters": [
-          {
-            "name": "public_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Public Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_upload_receipt_api_v1_groups__public_id__receipts_post"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReceiptOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/groups/{public_id}/receipts/{receipt_id}": {
       "get": {
         "tags": [
@@ -1312,6 +1793,286 @@
         "responses": {
           "200": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/receipts": {
+      "post": {
+        "tags": [
+          "receipts",
+          "receipts"
+        ],
+        "summary": "Upload Receipt",
+        "description": "安い確認から順に行い、重い画像処理(デコード・再エンコード)は最後にする。\n\n1. メンバー確認 → 2. バイト数 → 3. 同じ画像(枠を消費しない)→ 4. ワーカー稼働 → 5. 利用枠(ロックなし)\n→ 6. 流量制限 → 7. ヘッダーの形式・寸法 → 8. デコード・EXIF 除去 → 9. 枠の確保(ロック)と制限の再確認 → 保存",
+        "operationId": "upload_receipt_api_v1_groups__public_id__receipts_post",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_receipt_api_v1_groups__public_id__receipts_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReceiptOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/payment-destination": {
+      "get": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Get Mine",
+        "operationId": "get_mine_api_v1_account_payment_destination_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DestinationOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Mine Api V1 Account Payment Destination Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Change",
+        "description": "新しい版を作る(以前の版は書き換えない。支払者には変更を警告する)。",
+        "operationId": "change_api_v1_account_payment_destination_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Create",
+        "operationId": "create_api_v1_account_payment_destination_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Erase",
+        "description": "消去: すべての版の暗号文と包んだ鍵を消し、復号できなくする(伏せ字の表示だけ残る)。",
+        "operationId": "erase_api_v1_account_payment_destination_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/v1/account/payment-destination/sharing": {
+      "post": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Set Sharing",
+        "description": "共有の許可・取り消し。取り消すと、以後は支払者に表示しない(既に見た人の記憶は消せない)。",
+        "operationId": "set_sharing_api_v1_account_payment_destination_sharing_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SharingIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/payment-destination/reveal": {
+      "get": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Reveal",
+        "operationId": "reveal_api_v1_account_payment_destination_reveal_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationRevealOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settlements/{transfer_id}/destination": {
+      "get": {
+        "tags": [
+          "payment-destinations"
+        ],
+        "summary": "Payer View",
+        "operationId": "payer_view_api_v1_settlements__transfer_id__destination_get",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Transfer Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayerDestinationOut"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1564,6 +2325,16 @@
             "type": "integer",
             "title": "Settled In Minor"
           },
+          "reported_unconfirmed_out_minor": {
+            "type": "integer",
+            "title": "Reported Unconfirmed Out Minor",
+            "default": 0
+          },
+          "reported_unconfirmed_in_minor": {
+            "type": "integer",
+            "title": "Reported Unconfirmed In Minor",
+            "default": 0
+          },
           "net_minor": {
             "type": "integer",
             "title": "Net Minor"
@@ -1610,6 +2381,61 @@
           "balance_sum_minor"
         ],
         "title": "BalancesOut"
+      },
+      "BankIn": {
+        "properties": {
+          "bank_code": {
+            "type": "string",
+            "pattern": "^\\d{4}$",
+            "title": "Bank Code"
+          },
+          "bank_name": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Bank Name"
+          },
+          "branch_code": {
+            "type": "string",
+            "pattern": "^\\d{3}$",
+            "title": "Branch Code"
+          },
+          "branch_name": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Branch Name"
+          },
+          "account_type": {
+            "type": "string",
+            "enum": [
+              "ordinary",
+              "checking",
+              "savings"
+            ],
+            "title": "Account Type"
+          },
+          "account_number": {
+            "type": "string",
+            "pattern": "^\\d{7}$",
+            "title": "Account Number"
+          },
+          "holder_kana": {
+            "type": "string",
+            "title": "Holder Kana"
+          }
+        },
+        "type": "object",
+        "required": [
+          "bank_code",
+          "bank_name",
+          "branch_code",
+          "branch_name",
+          "account_type",
+          "account_number",
+          "holder_kana"
+        ],
+        "title": "BankIn"
       },
       "BatchCreate": {
         "properties": {
@@ -1671,6 +2497,9 @@
             },
             "type": "array",
             "title": "Transfers"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/SettlementProgressOut"
           }
         },
         "type": "object",
@@ -1683,7 +2512,8 @@
           "created_at",
           "balances",
           "optimization",
-          "transfers"
+          "transfers",
+          "progress"
         ],
         "title": "BatchOut"
       },
@@ -1766,6 +2596,160 @@
         ],
         "title": "BreakdownOut"
       },
+      "CategoryStat": {
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "total_minor": {
+            "type": "integer",
+            "title": "Total Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category",
+          "count",
+          "total_minor"
+        ],
+        "title": "CategoryStat"
+      },
+      "DestinationIn": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "bank",
+              "paypay"
+            ],
+            "title": "Kind"
+          },
+          "bank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BankIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paypay": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PayPayIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share_with_payers": {
+            "type": "boolean",
+            "title": "Share With Payers",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "DestinationIn"
+      },
+      "DestinationOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "masked_label": {
+            "type": "string",
+            "title": "Masked Label"
+          },
+          "share_with_payers": {
+            "type": "boolean",
+            "title": "Share With Payers"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "version",
+          "masked_label",
+          "share_with_payers",
+          "updated_at"
+        ],
+        "title": "DestinationOut"
+      },
+      "DestinationRevealOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "masked_label": {
+            "type": "string",
+            "title": "Masked Label"
+          },
+          "share_with_payers": {
+            "type": "boolean",
+            "title": "Share With Payers"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "version",
+          "masked_label",
+          "share_with_payers",
+          "updated_at",
+          "details"
+        ],
+        "title": "DestinationRevealOut"
+      },
       "ExpenseCreate": {
         "properties": {
           "title": {
@@ -1791,6 +2775,27 @@
               }
             ],
             "title": "Occurred On"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "food",
+                  "drinks",
+                  "groceries",
+                  "transport",
+                  "lodging",
+                  "entertainment",
+                  "daily",
+                  "other"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
           },
           "payers": {
             "items": {
@@ -1884,6 +2889,17 @@
             ],
             "title": "Occurred On"
           },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
           "version": {
             "type": "integer",
             "title": "Version"
@@ -1970,6 +2986,27 @@
             ],
             "title": "Occurred On"
           },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "food",
+                  "drinks",
+                  "groceries",
+                  "transport",
+                  "lodging",
+                  "entertainment",
+                  "daily",
+                  "other"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
           "payers": {
             "items": {
               "$ref": "#/components/schemas/Payer"
@@ -2026,6 +3063,17 @@
               }
             ],
             "title": "Occurred On"
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
           },
           "version": {
             "type": "integer",
@@ -2101,6 +3149,27 @@
             ],
             "title": "Occurred On"
           },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "food",
+                  "drinks",
+                  "groceries",
+                  "transport",
+                  "lodging",
+                  "entertainment",
+                  "daily",
+                  "other"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
           "payers": {
             "items": {
               "$ref": "#/components/schemas/Payer"
@@ -2157,6 +3226,44 @@
           "projected_settlement"
         ],
         "title": "ExpensePreviewOut"
+      },
+      "ExpenseSearchOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExpenseOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "total_amount_minor": {
+            "type": "integer",
+            "title": "Total Amount Minor"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total_count",
+          "total_amount_minor",
+          "next_cursor"
+        ],
+        "title": "ExpenseSearchOut"
       },
       "GroupCreate": {
         "properties": {
@@ -2236,6 +3343,66 @@
         ],
         "title": "GroupOut"
       },
+      "GroupStatsOut": {
+        "properties": {
+          "expense_count": {
+            "type": "integer",
+            "title": "Expense Count"
+          },
+          "total_minor": {
+            "type": "integer",
+            "title": "Total Minor"
+          },
+          "by_category": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryStat"
+            },
+            "type": "array",
+            "title": "By Category"
+          },
+          "by_month": {
+            "items": {
+              "$ref": "#/components/schemas/MonthStat"
+            },
+            "type": "array",
+            "title": "By Month"
+          },
+          "by_member": {
+            "items": {
+              "$ref": "#/components/schemas/MemberStat"
+            },
+            "type": "array",
+            "title": "By Member"
+          },
+          "unconfirmed_transfer_count": {
+            "type": "integer",
+            "title": "Unconfirmed Transfer Count"
+          },
+          "unconfirmed_transfer_minor": {
+            "type": "integer",
+            "title": "Unconfirmed Transfer Minor"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "expense_count",
+          "total_minor",
+          "by_category",
+          "by_month",
+          "by_member",
+          "unconfirmed_transfer_count",
+          "unconfirmed_transfer_minor",
+          "notes"
+        ],
+        "title": "GroupStatsOut"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -2258,6 +3425,16 @@
           "kind": {
             "type": "string",
             "title": "Kind"
+          },
+          "assurance_level": {
+            "type": "string",
+            "title": "Assurance Level",
+            "default": "guest"
+          },
+          "passkey_count": {
+            "type": "integer",
+            "title": "Passkey Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -2497,6 +3674,32 @@
         "type": "object",
         "title": "JoinRequest"
       },
+      "LoginVerifyIn": {
+        "properties": {
+          "flow_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 10,
+            "title": "Flow Id"
+          },
+          "credential": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Credential"
+          },
+          "merge_current_guest": {
+            "type": "boolean",
+            "title": "Merge Current Guest",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "flow_id",
+          "credential"
+        ],
+        "title": "LoginVerifyIn"
+      },
       "MemberOut": {
         "properties": {
           "id": {
@@ -2529,6 +3732,29 @@
           "is_me"
         ],
         "title": "MemberOut"
+      },
+      "MemberStat": {
+        "properties": {
+          "member_id": {
+            "type": "string",
+            "title": "Member Id"
+          },
+          "paid_minor": {
+            "type": "integer",
+            "title": "Paid Minor"
+          },
+          "share_minor": {
+            "type": "integer",
+            "title": "Share Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "member_id",
+          "paid_minor",
+          "share_minor"
+        ],
+        "title": "MemberStat"
       },
       "MemberValue": {
         "properties": {
@@ -2572,6 +3798,29 @@
           "names"
         ],
         "title": "MembersAdd"
+      },
+      "MonthStat": {
+        "properties": {
+          "month": {
+            "type": "string",
+            "title": "Month"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "total_minor": {
+            "type": "integer",
+            "title": "Total Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "month",
+          "count",
+          "total_minor"
+        ],
+        "title": "MonthStat"
       },
       "OptimizationOut": {
         "properties": {
@@ -2659,6 +3908,88 @@
         ],
         "title": "OptimizationOut"
       },
+      "OptionsOut": {
+        "properties": {
+          "flow_id": {
+            "type": "string",
+            "title": "Flow Id"
+          },
+          "options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options"
+          }
+        },
+        "type": "object",
+        "required": [
+          "flow_id",
+          "options"
+        ],
+        "title": "OptionsOut"
+      },
+      "PasskeyOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "nickname": {
+            "type": "string",
+            "title": "Nickname"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "device_type": {
+            "type": "string",
+            "enum": [
+              "single_device",
+              "multi_device"
+            ],
+            "title": "Device Type"
+          },
+          "backed_up": {
+            "type": "boolean",
+            "title": "Backed Up"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "nickname",
+          "created_at",
+          "last_used_at",
+          "device_type",
+          "backed_up"
+        ],
+        "title": "PasskeyOut"
+      },
+      "PayPayIn": {
+        "properties": {
+          "paypay_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_\\-]{3,40}$",
+            "title": "Paypay Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "paypay_id"
+        ],
+        "title": "PayPayIn"
+      },
       "Payer": {
         "properties": {
           "member_id": {
@@ -2681,6 +4012,97 @@
           "amount_minor"
         ],
         "title": "Payer"
+      },
+      "PayerDestinationOut": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "not_shared"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          },
+          "masked_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Masked Label"
+          },
+          "reference_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Code"
+          },
+          "changed_since_first_view": {
+            "type": "boolean",
+            "title": "Changed Since First View",
+            "default": false
+          },
+          "first_viewed_masked_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Viewed Masked Label"
+          },
+          "notice": {
+            "type": "string",
+            "title": "Notice",
+            "default": "このアプリは送金を実行しません。表示された振込先へ、ご自身の銀行アプリ等で送金してください。照合コードは送金の目印で、支払いの証明ではありません"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available"
+        ],
+        "title": "PayerDestinationOut"
       },
       "PlanOut": {
         "properties": {
@@ -2973,6 +4395,59 @@
         ],
         "title": "ReceiptOut"
       },
+      "RegisterOptionsIn": {
+        "properties": {
+          "nickname": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nickname"
+          }
+        },
+        "type": "object",
+        "title": "RegisterOptionsIn"
+      },
+      "RegisterVerifyIn": {
+        "properties": {
+          "flow_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 10,
+            "title": "Flow Id"
+          },
+          "credential": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Credential"
+          },
+          "nickname": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nickname"
+          }
+        },
+        "type": "object",
+        "required": [
+          "flow_id",
+          "credential"
+        ],
+        "title": "RegisterVerifyIn"
+      },
       "RevisionOut": {
         "properties": {
           "version": {
@@ -3013,6 +4488,44 @@
         ],
         "title": "RevisionOut"
       },
+      "SessionStateOut": {
+        "properties": {
+          "identity_id": {
+            "type": "string",
+            "title": "Identity Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "assurance_level": {
+            "type": "string",
+            "title": "Assurance Level"
+          },
+          "passkey_count": {
+            "type": "integer",
+            "title": "Passkey Count"
+          },
+          "merged_groups": {
+            "type": "integer",
+            "title": "Merged Groups",
+            "default": 0
+          },
+          "unmerged_groups": {
+            "type": "integer",
+            "title": "Unmerged Groups",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "identity_id",
+          "kind",
+          "assurance_level",
+          "passkey_count"
+        ],
+        "title": "SessionStateOut"
+      },
       "SettlementPlanOut": {
         "properties": {
           "ledger_version": {
@@ -3050,6 +4563,9 @@
             },
             "type": "array",
             "title": "Locked Transfers"
+          },
+          "locked_progress": {
+            "$ref": "#/components/schemas/SettlementProgressOut"
           }
         },
         "type": "object",
@@ -3060,9 +4576,62 @@
           "balance_sum_minor",
           "transfers",
           "optimization",
-          "locked_transfers"
+          "locked_transfers",
+          "locked_progress"
         ],
         "title": "SettlementPlanOut"
+      },
+      "SettlementProgressOut": {
+        "properties": {
+          "unpaid_count": {
+            "type": "integer",
+            "title": "Unpaid Count"
+          },
+          "unpaid_minor": {
+            "type": "integer",
+            "title": "Unpaid Minor"
+          },
+          "reported_unconfirmed_count": {
+            "type": "integer",
+            "title": "Reported Unconfirmed Count"
+          },
+          "reported_unconfirmed_minor": {
+            "type": "integer",
+            "title": "Reported Unconfirmed Minor"
+          },
+          "recipient_confirmed_count": {
+            "type": "integer",
+            "title": "Recipient Confirmed Count"
+          },
+          "recipient_confirmed_minor": {
+            "type": "integer",
+            "title": "Recipient Confirmed Minor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "unpaid_count",
+          "unpaid_minor",
+          "reported_unconfirmed_count",
+          "reported_unconfirmed_minor",
+          "recipient_confirmed_count",
+          "recipient_confirmed_minor"
+        ],
+        "title": "SettlementProgressOut",
+        "description": "送金の進み具合。申告済み(未確認)と受取確認済みを別々に数える。"
+      },
+      "SharingIn": {
+        "properties": {
+          "share_with_payers": {
+            "type": "boolean",
+            "title": "Share With Payers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "share_with_payers"
+        ],
+        "title": "SharingIn"
       },
       "SplitIn": {
         "properties": {
@@ -3144,6 +4713,14 @@
             "type": "integer",
             "title": "Version"
           },
+          "status_label": {
+            "type": "string",
+            "title": "Status Label"
+          },
+          "is_recipient_confirmed": {
+            "type": "boolean",
+            "title": "Is Recipient Confirmed"
+          },
           "group_public_id": {
             "type": "string",
             "title": "Group Public Id"
@@ -3179,6 +4756,8 @@
           "currency",
           "status",
           "version",
+          "status_label",
+          "is_recipient_confirmed",
           "group_public_id",
           "from_name",
           "to_name",
@@ -3226,6 +4805,14 @@
           "version": {
             "type": "integer",
             "title": "Version"
+          },
+          "status_label": {
+            "type": "string",
+            "title": "Status Label"
+          },
+          "is_recipient_confirmed": {
+            "type": "boolean",
+            "title": "Is Recipient Confirmed"
           }
         },
         "type": "object",
@@ -3237,7 +4824,9 @@
           "amount_minor",
           "currency",
           "status",
-          "version"
+          "version",
+          "status_label",
+          "is_recipient_confirmed"
         ],
         "title": "TransferOut"
       },

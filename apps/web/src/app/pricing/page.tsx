@@ -18,7 +18,9 @@ export default function PricingPage() {
       {plans && (
         <>
           <p className="notice warn">
-            現在、レシート読み取り・広告・有料プランはいずれも準備中です。下の内容は予定であり、購入や広告の視聴はできません。
+            {plans.ocr_available
+              ? "レシート読み取りは無料枠の範囲で利用できます。広告・有料プランは準備中で、購入や広告の視聴はできません。"
+              : "現在、レシート読み取りは停止中です(手入力は利用できます)。広告・有料プランは準備中で、購入や広告の視聴はできません。"}
           </p>
           <table aria-label="料金プランの比較">
             <thead>
@@ -39,7 +41,7 @@ export default function PricingPage() {
                       ? `${p.ocr_monthly_scans_min}枚`
                       : `${p.ocr_monthly_scans_min}〜${p.ocr_monthly_scans_max}枚`}
                   </td>
-                  <td>{!p.available ? "検討中" : plans.ocr_available ? "利用できます" : "割り勘は利用可・読み取りは準備中"}</td>
+                  <td>{!p.available ? "検討中" : plans.ocr_available ? "利用できます" : "割り勘は利用可・読み取りは停止中"}</td>
                 </tr>
               ))}
             </tbody>

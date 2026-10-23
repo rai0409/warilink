@@ -2,8 +2,9 @@
 
   python -m app.ocr.cli recognize 画像 [--json]          1枚を読み取って下書きを表示(DB 不要)
   python -m app.ocr.cli synth --out DIR --count 50       合成レシートと正解ラベルを生成
-  python -m app.ocr.cli evaluate DIR [--baseline F]      評価(verified/synthetic ラベルのみ)
-  python -m app.ocr.cli purge-images [--dry-run]         保存期間を過ぎた画像を削除
+  python -m app.ocr.cli evaluate DIR [--baseline F]      評価(verified/synthetic ラベルのみ。終了コード 0/2/3)
+  python -m app.ocr.cli purge-images [--dry-run] [--json]  保存期間を過ぎた画像を削除(失敗があれば終了コード 1)
+  python -m app.ocr.cli check-storage                    DB と画像ファイルの不一致を検査(不一致は終了コード 2)
   python -m app.ocr.cli stats                            読み取りの訂正件数・確認時間の集計(DB)
 """
 
@@ -12,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -61,10 +61,14 @@ def cmd_synth(a: argparse.Namespace) -> int:
 
 
 def cmd_evaluate(a: argparse.Namespace) -> int:
+    """終了コード: 0 = 評価できた(基準があれば accepted)/ 2 = rejected(悪化)/
+    3 = incomparable・blocked・insufficient(比較できない・件数不足・未測定。採用しない)。
+    """
     from app.core.config import get_settings  # noqa: PLC0415
-    from app.ocr.evaluate import compare, evaluate  # noqa: PLC0415
+    from app.ocr.evaluate import EvalBlocked, compare, evaluate  # noqa: PLC0415
 
     adapter = None if a.reuse_tokens else _adapter()
+    preprocess_version = None
 
     def recognize(path: Path):
         from app.ocr.preprocess import decode, prepare  # noqa: PLC0415
@@ -74,42 +78,60 @@ def cmd_evaluate(a: argparse.Namespace) -> int:
             return []
         return adapter.recognize(prepare(img).image) if adapter else []
 
-    result = evaluate(Path(a.dataset), adapter, low_confidence=get_settings().ocr_low_confidence,
-                      reuse_tokens=a.reuse_tokens,
-                      recognize_and_prepare=None if a.reuse_tokens else recognize)
+    if adapter is not None:
+        from app.ocr.worker import PREPROCESS_VERSION  # noqa: PLC0415
+
+        preprocess_version = PREPROCESS_VERSION
+    try:
+        result = evaluate(Path(a.dataset), adapter, low_confidence=get_settings().ocr_low_confidence,
+                          reuse_tokens=a.reuse_tokens, recognize_and_prepare=None if a.reuse_tokens else recognize,
+                          min_samples=a.min_samples, preprocess_version=preprocess_version)
+    except EvalBlocked as e:
+        print(json.dumps({"status": "blocked", "reason": str(e)}, ensure_ascii=False))
+        return 3
     if a.baseline:
         result["comparison"] = compare(result, json.loads(Path(a.baseline).read_text()), a.tolerance)
     text = json.dumps(result, ensure_ascii=False, indent=1)
     if a.out:
         Path(a.out).write_text(text)
-    print(json.dumps({k: result[k] for k in ("metrics", "skipped", "dataset_digest", "parser_version", "model")}
-                     | ({"comparison": result["comparison"]} if "comparison" in result else {}),
+    keys = ("status", "metrics", "by_source", "skipped", "dataset_digest", "provenance", "note")
+    print(json.dumps({k: result[k] for k in keys} | ({"comparison": result["comparison"]} if a.baseline else {}),
                      ensure_ascii=False, indent=1))
-    return 2 if result.get("comparison", {}).get("decision") == "rejected" else 0
+    if a.baseline:
+        decision = result["comparison"]["decision"]
+        return {"accepted": 0, "rejected": 2}.get(decision, 3)
+    return 3 if result["status"] == "blocked" else 0
 
 
 def cmd_purge(a: argparse.Namespace) -> int:
-    from sqlalchemy import select  # noqa: PLC0415
+    """終了コード: 0 = 成功、1 = 削除できなかった画像がある(監視で通知する。次回の実行で再試行)。"""
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
-    from app.core.config import get_settings  # noqa: PLC0415
     from app.core.db import get_engine  # noqa: PLC0415
-    from app.models.tables import Receipt  # noqa: PLC0415
-    from app.ocr.images import delete_image  # noqa: PLC0415
+    from app.ocr.images import purge_expired  # noqa: PLC0415
 
-    cutoff = datetime.now(UTC) - timedelta(days=get_settings().receipt_image_retention_days)
     with Session(get_engine()) as db:
-        rows = db.execute(select(Receipt).where(Receipt.created_at < cutoff, Receipt.image_deleted_at.is_(None))
-                          .with_for_update(skip_locked=True)).scalars().all()
-        for r in rows:
-            if not a.dry_run:
-                delete_image(r.storage_key)
-                r.image_deleted_at = datetime.now(UTC)
-        if not a.dry_run:
-            db.commit()
-    days = get_settings().receipt_image_retention_days
-    print(f"{'削除対象' if a.dry_run else '削除'}: {len(rows)} 枚(保存期間 {days} 日)")
-    return 0
+        res = purge_expired(db, dry_run=a.dry_run)
+    if a.json:
+        print(json.dumps(res.to_json(), ensure_ascii=False))
+    else:
+        verb = "削除対象" if a.dry_run else "削除"
+        print(f"{verb}: {res.candidates if a.dry_run else res.deleted} 枚(保存期間 {res.retention_days} 日)"
+              + (f" / 失敗 {len(res.failed)} 枚" if res.failed else ""))
+    return 1 if res.failed else 0
+
+
+def cmd_check_storage(a: argparse.Namespace) -> int:
+    """終了コード: 0 = DB とファイルが一致、2 = 不一致あり(読み取り専用。何も変更しない)。"""
+    from sqlalchemy.orm import Session  # noqa: PLC0415
+
+    from app.core.db import get_engine  # noqa: PLC0415
+    from app.ocr.images import check_storage  # noqa: PLC0415
+
+    with Session(get_engine()) as db:
+        rep = check_storage(db)
+    print(json.dumps(rep.to_json(), ensure_ascii=False))
+    return 0 if rep.consistent else 2
 
 
 def cmd_stats(a: argparse.Namespace) -> int:
@@ -154,12 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--tolerance", type=float, default=0.0)
     e.add_argument("--out")
     e.add_argument("--reuse-tokens", action="store_true", help="保存済みの認識結果でパーサーだけを評価")
+    e.add_argument("--min-samples", type=int, default=30, help="これ未満の件数では採否を判定しない(insufficient)")
     g = sub.add_parser("purge-images")
     g.add_argument("--dry-run", action="store_true")
+    g.add_argument("--json", action="store_true")
+    sub.add_parser("check-storage")
     sub.add_parser("stats")
     a = p.parse_args(argv)
     return {"recognize": cmd_recognize, "synth": cmd_synth, "evaluate": cmd_evaluate, "purge-images": cmd_purge,
-            "stats": cmd_stats}[a.cmd](a)
+            "check-storage": cmd_check_storage, "stats": cmd_stats}[a.cmd](a)
 
 
 if __name__ == "__main__":

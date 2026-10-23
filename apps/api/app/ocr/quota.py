@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.errors import ApiError
-from app.models.tables import Identity, OcrQuotaEntry
+from app.models.tables import Group, Identity, OcrQuotaEntry, Receipt, ReceiptJob
 
 JST = ZoneInfo("Asia/Tokyo")
 
@@ -85,3 +85,40 @@ def refund(db: Session, receipt_id: uuid.UUID, reason: str) -> bool:
         receipt_id=receipt_id, reason=reason,
     ).on_conflict_do_nothing(constraint="uq_quota_receipt_kind").returning(OcrQuotaEntry.id))
     return res.scalar_one_or_none() is not None
+
+
+def precheck(db: Session, identity_id: uuid.UUID) -> None:
+    """重い画像処理の前の安い確認(ロックなし)。確定的な判定は reserve で行う。"""
+    st = status(db, identity_id)
+    if st.remaining <= 0:
+        raise ApiError(429, "OCR_QUOTA_EXCEEDED",
+                       f"今月の読み取り枠({st.free}枚)を使い切りました。レシートの内容は手入力で登録できます")
+
+
+def check_limits(db: Session, identity_id: uuid.UUID, group_id: uuid.UUID, *, lock: bool = False) -> None:
+    """利用者・グループ・全体の流量制限。lock=True ではグループ行をロックして同時アップロードでも超えない。
+
+    reserve(利用者の行のロック)の後に呼ぶこと(ロック順: 利用者 → グループ)。
+    """
+    s = get_settings()
+    now = datetime.now(JST)
+    if lock:
+        db.execute(select(Group.id).where(Group.id == group_id).with_for_update())
+    limited = ApiError(429, "OCR_RATE_LIMITED",
+                       "短時間に多くの画像が送られました。しばらく待ってから試すか、手入力してください")
+    n = db.execute(select(func.count()).select_from(Receipt).where(
+        Receipt.uploaded_by == identity_id, Receipt.created_at > now - timedelta(minutes=10))).scalar_one()
+    if n >= s.ocr_rate_identity_per_10min:
+        raise limited
+    n = db.execute(select(func.count()).select_from(Receipt).where(
+        Receipt.group_id == group_id, Receipt.created_at > now - timedelta(hours=1))).scalar_one()
+    if n >= s.ocr_rate_group_per_hour:
+        raise limited
+    n = db.execute(select(func.count()).select_from(ReceiptJob).join(Receipt, Receipt.id == ReceiptJob.receipt_id)
+                   .where(Receipt.uploaded_by == identity_id, ReceiptJob.state.in_(("queued", "running")))).scalar_one()
+    if n >= s.ocr_max_pending_per_identity:
+        raise ApiError(429, "OCR_RATE_LIMITED", "読み取り中の画像があります。終わってから次の画像を選んでください")
+    n = db.execute(select(func.count()).select_from(ReceiptJob)
+                   .where(ReceiptJob.state.in_(("queued", "running")))).scalar_one()
+    if n >= s.ocr_max_queue_backlog:
+        raise ApiError(503, "OCR_BUSY", "読み取りが混み合っています。時間をおいて試すか、手入力してください")
