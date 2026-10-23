@@ -28,8 +28,8 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U warilink" --health-interval 3s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
       # 傾き補正のテストが日本語の合成レシート画像を作るため、日本語フォントを入れる
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
@@ -45,10 +45,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 9.15.4 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm web:typecheck && pnpm web:build
@@ -70,19 +70,19 @@ jobs:
       E2E_DATABASE_URL: postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_e2e
       WARILINK_OCR_CPU_THREADS: "2"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 9.15.4 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       # 合成レシートの描画用の日本語フォント(OFL-1.1)と OpenCV の実行時ライブラリ
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk libgl1 libglib2.0-0
       - run: python -m venv .venv && .venv/bin/pip install uv==0.13.1
       - run: cd apps/api && UV_PROJECT_ENVIRONMENT=../../.venv ../../.venv/bin/uv sync --frozen --group ocr
       - name: PaddleOCR models cache (公式配布元から初回取得、名前で固定)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.paddlex/official_models
           key: paddlex-models-PP-OCRv6_medium-${{ hashFiles('apps/api/uv.lock') }}
@@ -91,7 +91,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @warilink/web exec playwright install --with-deps chromium
       - run: pnpm e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: playwright-report
