@@ -7,6 +7,7 @@ import {
   type Batch,
   type Group,
   type PayerDestination,
+  type Plans,
   type SettlementPlan,
   type TransferRow,
 } from "@/lib/api";
@@ -134,20 +135,23 @@ export function SettlementPanel({ group }: { group: Group }) {
   const [plan, setPlan] = useState<SettlementPlan | null>(null);
   const [batch, setBatch] = useState<Batch | null>(null);
   const [history, setHistory] = useState<Batch[]>([]);
+  const [destinationsAvailable, setDestinationsAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const names = memberNames(group);
 
   const load = useCallback(async () => {
     try {
-      const [p, b, h] = await Promise.all([
+      const [p, b, h, flags] = await Promise.all([
         api<SettlementPlan>(`/groups/${publicId}/settlements/preview`, { method: "POST" }),
         api<Batch | null>(`/groups/${publicId}/settlement-batches/current`),
         api<Batch[]>(`/groups/${publicId}/settlement-batches`),
+        api<Plans>("/plans"),
       ]);
       setPlan(p);
       setBatch(b);
       setHistory(h.filter((x) => x.state !== "active"));
+      setDestinationsAvailable(flags.payment_destinations_available);
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -257,9 +261,11 @@ export function SettlementPanel({ group }: { group: Group }) {
                         </button>
                       </>
                     )}
-                    {t.from_member_id === me && (t.status === "unpaid" || t.status === "reported_paid") && (
-                      <DestinationView transfer={t} />
-                    )}
+                    {destinationsAvailable &&
+                      t.from_member_id === me &&
+                      (t.status === "unpaid" || t.status === "reported_paid") && (
+                        <DestinationView transfer={t} />
+                      )}
                     {t.to_member_id === me && t.status !== "recipient_confirmed" && (
                       <button type="button" onClick={() => run(() => api(`/settlements/${t.id}/confirm-received`, { method: "POST" }))}>
                         受け取りを確認

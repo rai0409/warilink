@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import get_settings, require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.security import current_identity, load_group_access, parse_uuid
@@ -127,6 +127,7 @@ def upload_receipt(public_id: str, file: UploadFile = File(...),
     1. メンバー確認 → 2. バイト数 → 3. 同じ画像(枠を消費しない)→ 4. ワーカー稼働 → 5. 利用枠(ロックなし)
     → 6. 流量制限 → 7. ヘッダーの形式・寸法 → 8. デコード・EXIF 除去 → 9. 枠の確保(ロック)と制限の再確認 → 保存
     """
+    require_feature("ocr")
     s = get_settings()
     acc = load_group_access(db, public_id, ident)
     raw = file.file.read(s.receipt_max_bytes + 1)

@@ -15,7 +15,7 @@ export default function PricingPage() {
     <>
       <h1>料金プラン</h1>
       {error && <p className="error" role="alert">{error}</p>}
-      {plans && (
+      {plans && plans.ocr_available && (
         <>
           <p className="notice warn">
             {plans.ocr_available

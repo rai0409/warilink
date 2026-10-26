@@ -8,6 +8,10 @@ os.environ.setdefault(
     "WARILINK_DATABASE_URL", "postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_test"
 )
 os.environ["WARILINK_ENVIRONMENT"] = "test"
+# API の既存機能テストは、V0 で任意になった機能を明示的に有効化して従来どおり検証する。
+os.environ["WARILINK_FEATURE_PASSKEYS"] = "true"
+os.environ["WARILINK_FEATURE_PAYMENT_DESTINATIONS"] = "true"
+os.environ["WARILINK_FEATURE_OCR"] = "true"
 
 # このテストは開始時に全テーブルを downgrade し、テストごとに TRUNCATE する。
 # 共有・開発・本番の DB に向いていたら、何もせずに中止する(fail-closed)。

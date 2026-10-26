@@ -6,7 +6,7 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/browser";
 import { useCallback, useEffect, useState } from "react";
-import { api, errorMessage, type Me, type Passkey, type PasskeyOptions, type SessionState } from "@/lib/api";
+import { api, errorMessage, type Me, type Passkey, type PasskeyOptions, type Plans, type SessionState } from "@/lib/api";
 
 // ブラウザ・認証器のエラーを、利用者が読んで分かる日本語にする(技術的な名前は出さない)
 function passkeyError(e: unknown): string {
@@ -26,11 +26,14 @@ export function AccountPanel() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [passkeysAvailable, setPasskeysAvailable] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const m = await api<Me | null>("/identity/me");
       setMe(m);
+      const plans = await api<Plans>("/plans");
+      setPasskeysAvailable(plans.passkeys_available);
       setKeys(m && m.kind === "registered" ? await api<Passkey[]>("/auth/passkeys") : []);
     } catch (e) {
       setError(errorMessage(e));
@@ -106,13 +109,15 @@ export function AccountPanel() {
         )}
         <p className="muted">
           ゲストの情報はこのブラウザの Cookie だけに結びついています。Cookie を消したり端末を変えたりすると、元に戻せない場合があります。
-          Passkey を登録すると、別の端末からも同じグループに入れます。メールアドレスや電話番号は使いません。
+          {passkeysAvailable
+            ? "Passkey を登録すると、別の端末からも同じグループに入れます。メールアドレスや電話番号は使いません。"
+            : "V0 ベータではゲストセッションで利用できます。Passkey の新規登録・ログインは提供していません。"}
         </p>
         {message && <p className="notice" role="status">{message}</p>}
         {error && <p className="error" role="alert">{error}</p>}
       </section>
 
-      <section className="card" aria-labelledby="reg-h">
+      {passkeysAvailable && <section className="card" aria-labelledby="reg-h">
         <h2 id="reg-h">{isRegistered ? "Passkey を追加" : "Passkey を登録(任意)"}</h2>
         <label htmlFor="pk-name">この端末の名前(任意。一覧で見分けるためだけに使います)</label>
         <input id="pk-name" value={nickname} maxLength={40} onChange={(e) => setNickname(e.target.value)} />
@@ -121,7 +126,7 @@ export function AccountPanel() {
             {isRegistered ? "Passkey を追加する" : "Passkey を登録する"}
           </button>
         </p>
-      </section>
+      </section>}
 
       {isRegistered && (
         <section className="card" aria-labelledby="keys-h">
@@ -185,7 +190,7 @@ export function AccountPanel() {
         </section>
       )}
 
-      <section className="card" aria-labelledby="login-h">
+      {passkeysAvailable && <section className="card" aria-labelledby="login-h">
         <h2 id="login-h">Passkey でログイン</h2>
         <p className="muted">別の端末で登録した Passkey(同期された Passkey を含む)でログインします。</p>
         {me?.kind === "guest" && (
@@ -202,7 +207,7 @@ export function AccountPanel() {
         <p className="muted">
           Passkey をすべて失った場合、アカウントを復元する手段はありません(メール・SMS による復元は行いません)。
         </p>
-      </section>
+      </section>}
     </>
   );
 }

@@ -57,6 +57,18 @@
 | `WARILINK_FEATURE_ADS=true` / `WARILINK_FEATURE_BILLING=true` | 未実装 |
 | `WARILINK_ENVIRONMENT` が development/test/production 以外 | 綴り違いで開発設定のまま動くのを防ぐ |
 
+- V0 production の機能設定例は、次を明示する。ゲスト利用・グループ・手入力支出・明細割り勘・精算案・手動確認は既定で有効である。
+
+  ```env
+  WARILINK_FEATURE_PASSKEYS=false
+  WARILINK_FEATURE_PAYMENT_DESTINATIONS=false
+  WARILINK_FEATURE_OCR=false
+  WARILINK_FEATURE_ADS=false
+  WARILINK_FEATURE_BILLING=false
+  WARILINK_FEATURE_BANK_PROVIDER=false
+  ```
+
+  将来のリリースで `true` にする場合は、当該 API の拒否解除、UI 表示、運用・法務要件を同じリリースで確認する。
 - エラーメッセージは設定名だけを示し、値(DB のパスワード等)は出さない。pydantic の検証エラーも入力値を表示しない設定にした。
 - 本番では状態変更リクエスト(POST/PUT/PATCH/DELETE)に `X-WariLink-CSRF: 1` と、許可リストにある `Origin` の**両方**を要求する
   (Origin なしも拒否)。開発・テストでは Origin なしを許す(既存のテストクライアント・ツールとの互換)。
@@ -90,7 +102,9 @@
 
 ### 2.4 振込先(P08、2026-10-20)
 
-- 保存は Passkey 登録済みの本人だけ。登録・変更・自分の全桁表示は直近 10 分以内の Passkey 確認(step-up)が必要。
+- 保存は Passkey 登録済みの本人だけ。登録・変更・共有の許可・解除・自分の全桁表示は直近 10 分以内の Passkey 確認(step-up)が必要。機能提供中の削除にも同じ確認を要求する。
+- V0 では Passkey と振込先機能を停止するため（またはいずれか一方が停止中のため）、既存の振込先については例外として、CSRF を通過した有効な**登録済み所有者セッション**からの不可逆な暗号学的消去だけを許可する。作成・変更・共有・本人/支払者への開示はすべて 503 で停止する。この例外は `destination.erase` の `legacy_feature_disabled=true` として監査し、暗号文・nonce・包んだ DEK を NULL にして復号不能にする。
+- この V0 例外は、Passkey を失った利用者の残存データを消せるようにするための限定措置である。削除後に元へ戻すことはできず、伏せ字など暗号化対象外の履歴メタデータは保持されうる。
 - 暗号化はエンベロープ方式(版ごとの DEK + 版つきの KEK、AES-256-GCM、AAD で行・所有者に結びつける)。KEK は環境変数で渡し、
   DB・バックアップ(`scripts/warilink_backup.py`)には含まれない。KEK を失うと復号できない(テストで確認)。
 - 本番: KEK が未設定なら振込先の機能だけを止める(503)。開発用の固定鍵・不正な鍵の設定は起動を拒否する。

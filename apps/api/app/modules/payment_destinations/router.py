@@ -1,6 +1,7 @@
 """振込先(受取口座・PayPay ID)の登録と、精算の支払者だけへの限定表示。
 
-- 保存できるのは Passkey 登録済みの本人だけ。登録・変更・全桁表示には直近の Passkey 確認(step-up)が必要。
+- 保存できるのは Passkey 登録済みの本人だけ。登録・変更・共有設定・全桁表示には直近の Passkey 確認(step-up)が必要。
+- V0 で機能を停止中でも、既存データは登録済み所有者が暗号学的に消去できる。この例外は作成・変更・共有・開示には使えない。
 - 中身は版ごとに暗号化(crypto.py)。一覧・監査ログ・URL には伏せ字(masked_label)と ID だけを出す。
 - 表示できるのは「その送金の支払者」だけ。受取人が共有を許可していなければ表示しない。
 - アプリは送金を実行しない。表示とコピーのみ。照合コードは支払いの証明ではない。
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field, StringConstraints, field_validator, model
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings, require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.security import current_identity, load_transfer_party, now, require_step_up
@@ -196,6 +198,7 @@ def get_mine(db: Session = Depends(get_db), ident: Identity = Depends(current_id
 @router.post("/account/payment-destination", response_model=DestinationOut, status_code=201)
 def create(body: DestinationIn, request: Request, db: Session = Depends(get_db),
            ident: Identity = Depends(current_identity)) -> DestinationOut:
+    require_feature("payment_destinations")
     _require_registered(ident)
     require_step_up(request, db)
     if _mine(db, ident, for_update=True) is not None:
@@ -216,6 +219,7 @@ def create(body: DestinationIn, request: Request, db: Session = Depends(get_db),
 def change(body: DestinationIn, request: Request, db: Session = Depends(get_db),
            ident: Identity = Depends(current_identity)) -> DestinationOut:
     """新しい版を作る(以前の版は書き換えない。支払者には変更を警告する)。"""
+    require_feature("payment_destinations")
     _require_registered(ident)
     require_step_up(request, db)
     d = _mine(db, ident, for_update=True)
@@ -233,9 +237,12 @@ def change(body: DestinationIn, request: Request, db: Session = Depends(get_db),
 
 
 @router.post("/account/payment-destination/sharing", response_model=DestinationOut)
-def set_sharing(body: SharingIn, db: Session = Depends(get_db),
+def set_sharing(body: SharingIn, request: Request, db: Session = Depends(get_db),
                 ident: Identity = Depends(current_identity)) -> DestinationOut:
     """共有の許可・取り消し。取り消すと、以後は支払者に表示しない(既に見た人の記憶は消せない)。"""
+    require_feature("payment_destinations")
+    _require_registered(ident)
+    require_step_up(request, db)
     d = _mine(db, ident, for_update=True)
     if d is None:
         raise not_found()
@@ -250,6 +257,7 @@ def set_sharing(body: SharingIn, db: Session = Depends(get_db),
 @router.get("/account/payment-destination/reveal", response_model=DestinationRevealOut)
 def reveal(request: Request, db: Session = Depends(get_db),
            ident: Identity = Depends(current_identity)) -> DestinationRevealOut:
+    require_feature("payment_destinations")
     require_step_up(request, db)
     d = _mine(db, ident)
     if d is None:
@@ -262,8 +270,13 @@ def reveal(request: Request, db: Session = Depends(get_db),
 
 
 @router.delete("/account/payment-destination", response_model=None, status_code=204)
-def erase(db: Session = Depends(get_db), ident: Identity = Depends(current_identity)) -> None:
-    """消去: すべての版の暗号文と包んだ鍵を消し、復号できなくする(伏せ字の表示だけ残る)。"""
+def erase(request: Request, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)) -> None:
+    """消去: 有効時は step-up を要求し、V0 停止中は所有者の不可逆な既存データ消去だけを許可する。"""
+    _require_registered(ident)
+    settings = get_settings()
+    legacy_cleanup = not (settings.feature_payment_destinations and settings.feature_passkeys)
+    if not legacy_cleanup:
+        require_step_up(request, db)
     d = _mine(db, ident, for_update=True)
     if d is None:
         raise not_found()
@@ -271,7 +284,8 @@ def erase(db: Session = Depends(get_db), ident: Identity = Depends(current_ident
                .values(wrapped_dek=None, nonce=None, ciphertext=None))
     d.erased_at = now()
     d.share_with_payers = False
-    _audit(db, ident, "destination.erase", d.id)
+    # V0 の例外であることを監査に残す。復号・共有・再利用できる状態は一切残さない。
+    _audit(db, ident, "destination.erase", d.id, legacy_feature_disabled=legacy_cleanup)
     db.commit()
 
 
@@ -285,6 +299,7 @@ def _reference_code() -> str:
 @router.get("/settlements/{transfer_id}/destination", response_model=PayerDestinationOut)
 def payer_view(transfer_id: str, db: Session = Depends(get_db),
                ident: Identity = Depends(current_identity)) -> PayerDestinationOut:
+    require_feature("payment_destinations")
     t, me = load_transfer_party(db, transfer_id, ident)  # 当事者以外は 404(存在を隠す)
     if me.id != t.from_member_id:
         raise ApiError(403, "ACCESS_DENIED", "振込先を表示できるのは支払う本人だけです")

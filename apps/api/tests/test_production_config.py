@@ -22,6 +22,31 @@ def make(**over) -> Settings:
 def test_safe_production_is_accepted():
     s = make()
     assert s.cookie_secure and cfg.production_problems(s) == []
+    assert not s.feature_passkeys and not s.feature_payment_destinations and not s.feature_ocr
+
+
+@pytest.mark.parametrize("name", ["passkeys", "payment_destinations", "ocr"])
+def test_optional_v0_features_are_fail_closed_by_default(name):
+    with pytest.raises(ApiError) as e:
+        cfg.require_feature(name)
+    assert e.value.status == 503 and e.value.code == "FEATURE_DISABLED"
+
+
+@pytest.mark.parametrize("name", [
+    "guest_sessions", "groups", "manual_expenses", "itemized_allocation", "settlement", "settlement_confirmations",
+])
+def test_v0_features_are_available_by_default(name):
+    cfg.require_feature(name)
+
+
+@pytest.mark.parametrize("name", ["passkeys", "payment_destinations", "ocr"])
+def test_optional_features_are_available_when_enabled(monkeypatch, name):
+    monkeypatch.setenv(f"WARILINK_FEATURE_{name.upper()}", "true")
+    cfg.get_settings.cache_clear()
+    try:
+        cfg.require_feature(name)
+    finally:
+        cfg.get_settings.cache_clear()
 
 
 @pytest.mark.parametrize(

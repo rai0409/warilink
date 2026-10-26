@@ -239,9 +239,9 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | GET | `/account/payment-destination` | 自分の振込先(伏せ字・版・共有の可否)。未登録は null | 本人 |
 | POST | `/account/payment-destination` | 登録 `{kind: bank|paypay, bank|paypay, share_with_payers}` | 登録済み + step-up |
 | PUT | `/account/payment-destination` | 変更 = 新しい版(以前の版は書き換えない) | 登録済み + step-up |
-| POST | `/account/payment-destination/sharing` | 支払者への表示の許可・取り消し | 本人 |
+| POST | `/account/payment-destination/sharing` | 支払者への表示の許可・取り消し | 登録済み本人 + step-up |
 | GET | `/account/payment-destination/reveal` | 自分の全桁 | 本人 + step-up |
-| DELETE | `/account/payment-destination` | 消去(全版の暗号文と包んだ鍵を消す) | 本人 |
+| DELETE | `/account/payment-destination` | 消去(全版の暗号文と包んだ鍵を消す) | 振込先・Passkey の両方を提供中: 登録済み本人 + step-up。いずれか停止中: 登録済み所有者による不可逆消去のみ |
 | GET | `/settlements/{transfer_id}/destination` | 受取人が共有した振込先・照合コード・変更の警告 | **その送金の支払者だけ**(受取人 403、他は 404) |
 
 - step-up: 直近 `step_up_max_age_seconds`(既定 600 秒)以内に Passkey で確認したセッション。満たさなければ 401 `STEP_UP_REQUIRED`

@@ -19,14 +19,14 @@ export default function ReceiptPage() {
 
   return (
     <>
-      <section className="card" aria-labelledby="ocr-h">
+      {plans?.ocr_available && <section className="card" aria-labelledby="ocr-h">
         <h2 id="ocr-h">レシート画像から読み取る</h2>
         {plans && <ReceiptUpload publicId={group.public_id} available={plans.ocr_available} />}
         <p className="muted">
           画像は内容の確認のために保存し、一定期間後に削除します。撮影位置などの情報(EXIF)は保存しません。{" "}
           <Link href="/pricing">料金プラン</Link>
         </p>
-      </section>
+      </section>}
       <ReceiptEditor
         publicId={group.public_id}
         members={group.members}

@@ -3,6 +3,8 @@
 import base64
 import json
 import os
+import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -56,6 +58,27 @@ def raw_dump() -> str:
             rows += [json.dumps(dict(r._mapping), default=lambda x: x.hex() if isinstance(x, bytes) else str(x),
                                 ensure_ascii=False) for r in c.execute(text(f"SELECT * FROM {table}"))]
     return "\n".join(rows)
+
+
+def _identity_id(u: User) -> uuid.UUID:
+    return uuid.UUID(u.get("/identity/me").json()["id"])
+
+
+def _set_session(u: User, **values) -> None:
+    """Passkey の再認証を行わずに拒否経路を確認するため、当該テスト利用者のセッションだけを古くする。"""
+    with get_engine().begin() as c:
+        c.execute(update(SessionRow).where(SessionRow.identity_id == _identity_id(u)).values(**values))
+
+
+@contextmanager
+def _feature_flags(monkeypatch, *, payment_destinations: bool, passkeys: bool):
+    """V0 の停止状態を一時的に再現し、設定キャッシュを必ず元に戻す。"""
+    with monkeypatch.context() as m:
+        m.setenv("WARILINK_FEATURE_PAYMENT_DESTINATIONS", str(payment_destinations).lower())
+        m.setenv("WARILINK_FEATURE_PASSKEYS", str(passkeys).lower())
+        get_settings.cache_clear()
+        yield
+    get_settings.cache_clear()
 
 
 def test_registration_requires_passkey_account_and_recent_step_up(user_factory):
@@ -144,6 +167,97 @@ def test_sharing_revoke_and_erase(user_factory):
         left = c.execute(text("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL "
                               "OR wrapped_dek IS NOT NULL")).scalar_one()
     assert left == 0  # 消去後は復号に必要なものが残らない
+
+
+def test_sharing_requires_fresh_step_up_before_any_mutation(user_factory):
+    u = user_factory()
+    registered(u)
+    assert u.post("/account/payment-destination", json={**bank(), "share_with_payers": False}).status_code == 201
+
+    # Passkey 以外の有効セッションでは、許可も取り消しも状態を変えられない。
+    _set_session(u, assurance_level="guest")
+    r = u.post("/account/payment-destination/sharing", json={"share_with_payers": True})
+    assert r.status_code == 401 and r.json()["code"] == "STEP_UP_REQUIRED"
+    assert u.get("/account/payment-destination").json()["share_with_payers"] is False
+
+    _set_session(u, assurance_level="passkey", created_at=datetime.now(UTC))
+    assert u.post("/account/payment-destination/sharing", json={"share_with_payers": True}).status_code == 200
+    assert u.get("/account/payment-destination").json()["share_with_payers"] is True
+
+    _set_session(u, created_at=datetime.now(UTC) - timedelta(hours=1))
+    r = u.post("/account/payment-destination/sharing", json={"share_with_payers": False})
+    assert r.status_code == 401 and r.json()["code"] == "STEP_UP_REQUIRED"
+    assert u.get("/account/payment-destination").json()["share_with_payers"] is True
+
+    _set_session(u, created_at=datetime.now(UTC))
+    assert u.post("/account/payment-destination/sharing", json={"share_with_payers": False}).status_code == 200
+    assert u.get("/account/payment-destination").json()["share_with_payers"] is False
+
+
+def test_enabled_destination_erasure_requires_fresh_step_up(user_factory):
+    u = user_factory()
+    registered(u)
+    assert u.post("/account/payment-destination", json=bank()).status_code == 201
+
+    _set_session(u, created_at=datetime.now(UTC) - timedelta(hours=1))
+    r = u.delete("/account/payment-destination")
+    assert r.status_code == 401 and r.json()["code"] == "STEP_UP_REQUIRED"
+    with get_engine().connect() as c:
+        encrypted = c.execute(
+            text("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL")
+        ).scalar_one()
+    assert encrypted == 1
+
+    _set_session(u, created_at=datetime.now(UTC))
+    assert u.delete("/account/payment-destination").status_code == 204
+    with get_engine().connect() as c:
+        encrypted = c.execute(
+            text("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL")
+        ).scalar_one()
+    assert encrypted == 0
+
+
+def test_v0_only_allows_owner_to_cryptographically_erase_legacy_destination(user_factory, monkeypatch):
+    owner, other, guest = user_factory(), user_factory(), user_factory()
+    registered(owner)
+    registered(other)
+    assert owner.post("/account/payment-destination", json=bank()).status_code == 201
+    _set_session(owner, created_at=datetime.now(UTC) - timedelta(hours=1))
+
+    with _feature_flags(monkeypatch, payment_destinations=False, passkeys=False):
+        # V0 は復号・作成・変更・共有・支払者への開示を止める。
+        for method, path, body in (
+            (other.post, "/account/payment-destination", bank()),
+            (owner.put, "/account/payment-destination", bank(account_number="7654321")),
+            (owner.post, "/account/payment-destination/sharing", {"share_with_payers": False}),
+        ):
+            r = method(path, json=body)
+            assert r.status_code == 503 and r.json()["code"] == "FEATURE_DISABLED"
+        assert owner.get("/account/payment-destination/reveal").json()["code"] == "FEATURE_DISABLED"
+        disclosure = owner.get("/settlements/00000000-0000-0000-0000-000000000000/destination")
+        assert disclosure.json()["code"] == "FEATURE_DISABLED"
+
+        # 所有者以外、ゲスト、CSRF 不備はいずれも既存暗号文を消せない。
+        assert other.delete("/account/payment-destination").status_code == 404
+        assert guest.delete("/account/payment-destination").json()["code"] == "REGISTRATION_REQUIRED"
+        csrf = owner.c.delete("/api/v1/account/payment-destination", headers={"X-WariLink-CSRF": "0"})
+        assert csrf.status_code == 403 and csrf.json()["code"] == "CSRF_REJECTED"
+        with get_engine().connect() as c:
+            encrypted = c.execute(
+                text("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL")
+            ).scalar_one()
+        assert encrypted == 1
+
+        # 停止中の例外は、古い Passkey セッションでも所有者による不可逆消去だけを許可する。
+        assert owner.delete("/account/payment-destination").status_code == 204
+        dump = raw_dump()
+        assert ACCOUNT not in dump and '"legacy_feature_disabled": true' in dump
+        with get_engine().connect() as c:
+            row = c.execute(text("SELECT wrapped_dek, nonce, ciphertext FROM payment_destination_versions")).one()
+        assert row == (None, None, None)
+
+    # 機能を再度有効にしても、消去済みの秘密は読み出せない。
+    assert owner.get("/account/payment-destination/reveal").status_code == 404
 
 
 def test_superseded_transfer_does_not_disclose(user_factory):

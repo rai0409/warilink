@@ -1407,6 +1407,10 @@ export interface components {
         };
         /** PlansOut */
         PlansOut: {
+            /** Passkeys Available */
+            passkeys_available: boolean;
+            /** Payment Destinations Available */
+            payment_destinations_available: boolean;
             /** Ocr Available */
             ocr_available: boolean;
             /** Ads Available */
