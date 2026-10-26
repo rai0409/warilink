@@ -45,6 +45,7 @@ const REASON_LABEL: Record<string, string> = {
   SCOPED_DISCOUNT: "直前の商品だけの値引きと判断",
   POINT_USAGE: "ポイント利用(誰の負担を減らすか確認してください)",
   REFUND: "返品・取消の行",
+  TAX_GROUP_INFERRED: "軽減税率の記号が読めず、税額から税率を推定",
 };
 
 const ALLOC_LABEL: Record<AllocMode, string> = { equal: "均等", units: "数量で分ける", exact: "金額指定" };

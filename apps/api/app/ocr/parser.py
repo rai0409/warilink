@@ -17,7 +17,7 @@ from typing import Any
 from app.ocr.tokens import OcrToken
 
 # 0.2.0: 途中の合計で止めない(全行から合計の候補を集める)・ポイントの付与/利用/充当の区別・返品・印字点数の照合
-PARSER_VERSION = "rule-ja-0.2.0"
+PARSER_VERSION = "rule-ja-0.2.1"
 LOW_CONFIDENCE = 0.90
 
 # ---------------------------------------------------------------- 正規化・行の組み立て
@@ -76,6 +76,8 @@ _QTY_PATTERNS = [
     re.compile(r"[x×X*]\s*(?P<qty>\d{1,3})(?!\d)"),
 ]
 _REDUCED_MARK = re.compile(r"[※*]|軽(?:減)?")
+# 「※は軽減税率対象商品」のような凡例。記号の付いた商品が 8%、それ以外が 10% であることを示す
+_REDUCED_LEGEND = re.compile(r"軽減税率.{0,8}(?:対象|適用)|[※*].{0,4}軽減税率")
 
 
 def _to_int(num: str) -> int:
@@ -119,6 +121,39 @@ def find_quantity(text: str) -> tuple[int | None, int | None]:
             if 1 <= qty <= 999:
                 return qty, (_to_int(unit) if unit else None)
     return None, None
+
+
+# ---------------------------------------------------------------- 税区分の推定
+
+_INFER_MAX_ITEMS = 16
+
+
+def _infer_tax_groups(items: list[DraftItem], adjs: list[DraftAdjustment]) -> bool:
+    """外税で 8% と 10% の税額が印字されているのに記号を読めなかった場合、税額に合う商品の組み合わせを探す。
+
+    OCR は「※」を読み落としやすい。値引きなどが無く、組み合わせがちょうど 1 通りのときだけ税区分を入れ、
+    推定した商品は要確認にする(端数処理の違いに備えて税額は ±1 円まで許す)。
+    """
+    taxes = {a.tax_group: a.amount_minor for a in adjs if a.kind == "tax" and a.tax_group in ("8", "10")}
+    if set(taxes) != {"8", "10"} or any(a.kind != "tax" for a in adjs):
+        return False
+    if not 0 < len(items) <= _INFER_MAX_ITEMS or any(i.line_minor <= 0 for i in items):
+        return False
+    total = sum(i.line_minor for i in items)
+    found: list[int] = []
+    for mask in range(1, 1 << len(items)):
+        s8 = sum(it.line_minor for k, it in enumerate(items) if mask >> k & 1)
+        if abs(s8 * 8 / 100 - taxes["8"]) < 1 and abs((total - s8) * 10 / 100 - taxes["10"]) < 1:
+            found.append(mask)
+            if len(found) > 1:
+                return False
+    if len(found) != 1:
+        return False
+    for k, it in enumerate(items):
+        it.tax_group = "8" if found[0] >> k & 1 else "10"
+        it.needs_review = True
+        it.reasons.append("TAX_GROUP_INFERRED")
+    return True
 
 
 # ---------------------------------------------------------------- 行の役割
@@ -241,6 +276,7 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
     total_cands: list[dict[str, Any]] = []
     inclusive_tax_seen = False
     rates_seen: set[str] = set()
+    reduced_legend_seen = False
     store_name: str | None = None
     purchased_on: str | None = None
     item_count_printed: int | None = None
@@ -278,6 +314,8 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
             role = "date"
         if (r := _RATE.search(text)) and role in ("tax", "tax_inclusive", "ignore"):
             rates_seen.add(r.group(1))
+        if _REDUCED_LEGEND.search(text):
+            reduced_legend_seen = True
         line_log.append({"index": ln.index, "text": text, "role": role, "score": round(ln.score, 4),
                          "bbox": list(ln.bbox), "amount": amount.value if amount else None})
 
@@ -403,11 +441,20 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
     before_total = [v for v, i in subtotals if total_line is None or i < total_line]
     subtotal = before_total[-1] if before_total else None
 
-    # 軽減税率の記号がある場合、8% と 10% の両方の税行があれば記号なしの商品を 10% とみなす
-    if {"8", "10"} <= rates_seen and any(i.tax_group == "8" for i in items):
+    # 軽減税率の記号がある場合、8% と 10% の両方の税行か、軽減税率の凡例があれば記号なしの商品を 10% とみなす
+    # (どちらも無ければ記号なしの商品は不明のまま。下書きで利用者が確認する)
+    if ({"8", "10"} <= rates_seen or reduced_legend_seen) and any(i.tax_group == "8" for i in items):
         for it in items:
             if it.tax_group is None:
                 it.tax_group = "10"
+    elif not any(i.tax_group for i in items) and _infer_tax_groups(items, adjs):
+        warnings.append({"code": "TAX_GROUP_INFERRED",
+                         "message": "軽減税率の記号を読み取れなかったため、税額から 8% と 10% の商品を推定しました。"
+                                    "確認してください"})
+    elif reduced_legend_seen and not any(i.tax_group for i in items):
+        warnings.append({"code": "TAX_MARK_UNREADABLE",
+                         "message": "軽減税率(8%)の商品がありますが、どの商品かを読み取れませんでした。"
+                                    "税率を選んでください"})
 
     items_sum = sum(i.line_minor for i in items)
     tax_adjs = [a for a in adjs if a.kind == "tax"]
