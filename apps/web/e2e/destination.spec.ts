@@ -90,4 +90,17 @@ test("受取人が共有した振込先を、支払者だけが確認でき、�
   await b.reload();
   await bRow.getByRole("button", { name: "振込先を表示" }).click();
   await expect(bRow).toContainText("受取人は振込先を共有していません");
+
+  // 削除は元に戻せないことを確認してから行う。取り消せば何も変わらない
+  await a.reload();
+  a.once("dialog", (d) => d.dismiss());
+  await a.getByRole("button", { name: "削除する" }).click();
+  await expect(a.getByRole("status").filter({ hasText: "削除を取り消しました" })).toBeVisible();
+  await expect(a.getByText(/\*\*\*4321/)).toBeVisible();
+  a.once("dialog", (d) => {
+    expect(d.message()).toContain("元に戻せません");
+    d.accept();
+  });
+  await a.getByRole("button", { name: "削除する" }).click();
+  await expect(a.getByRole("status").filter({ hasText: "振込先を削除しました" })).toBeVisible();
 });

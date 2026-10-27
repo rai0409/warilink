@@ -3,6 +3,8 @@ from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.errors import ApiError
+
 ENVIRONMENTS = ("development", "test", "production")
 # 開発用の既定の DB 認証情報(compose・.env.example と同じ)。本番では使わせない
 DEV_DB_CREDENTIALS = ("warilink:warilink@", "warilink:warilink-dev-only@")
@@ -29,6 +31,16 @@ class Settings(BaseSettings):
     invite_default_ttl_hours: int = 24 * 7
     invite_default_max_uses: int = 50
 
+    # V0 beta の提供範囲。明示的に有効化した機能だけを API から提供する。
+    feature_guest_sessions: bool = True
+    feature_groups: bool = True
+    feature_manual_expenses: bool = True
+    feature_itemized_allocation: bool = True
+    feature_settlement: bool = True
+    feature_settlement_confirmations: bool = True
+    feature_passkeys: bool = False
+    feature_payment_destinations: bool = False
+
     settlement_exact_max_participants: int = 20
     settlement_time_limit_ms: int = 1500
 
@@ -39,7 +51,7 @@ class Settings(BaseSettings):
     ocr_pro_monthly_scans_min: int = 100  # Pro は検討中の参考値
     ocr_pro_monthly_scans_max: int = 300
     # OCR を受け付けるか。true でも、稼働中のワーカーの heartbeat が無ければ受け付けない
-    feature_ocr: bool = True
+    feature_ocr: bool = False
     feature_ads: bool = False
     feature_billing: bool = False
 
@@ -130,6 +142,12 @@ def ensure_safe(s: Settings) -> Settings:
         if problems:
             raise UnsafeProductionConfig("本番の設定が安全ではないため起動を中止します: " + " / ".join(problems))
     return s
+
+
+def require_feature(name: str) -> None:
+    """無効な任意機能の書込み・利用入口を設定だけで閉じる。"""
+    if not getattr(get_settings(), f"feature_{name}"):
+        raise ApiError(503, "FEATURE_DISABLED", "この機能は現在提供していません")
 
 
 @lru_cache

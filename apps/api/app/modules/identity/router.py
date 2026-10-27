@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import require_feature
 from app.core.db import get_db
 from app.core.security import check_csrf, create_guest_session, current_session, optional_identity
 from app.models.tables import Identity, PasskeyCredential
@@ -25,6 +26,7 @@ class IdentityOut(BaseModel):
 def start_guest(request: Request, response: Response, db: Session = Depends(get_db),
                 existing: Identity | None = Depends(optional_identity)) -> IdentityOut:
     """メール・電話番号不要のゲストセッションを開始する。既存の有効なセッションがあれば再利用する。"""
+    require_feature("guest_sessions")
     check_csrf(request)
     if existing is not None:
         return IdentityOut(identity_id=str(existing.id), kind=existing.kind)

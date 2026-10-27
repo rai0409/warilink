@@ -12,6 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Date, cast, delete, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.idempotency import run_idempotent
@@ -228,6 +229,9 @@ def group_stats(public_id: str, date_from: date | None = None, date_to: date | N
 def preview_expense(public_id: str, body: ExpensePreviewIn, db: Session = Depends(get_db),
                     ident: Identity = Depends(current_identity)) -> dict:
     """保存せずに負担額と、反映後の精算候補を計算する(入力のたびに呼ぶ想定)。"""
+    require_feature("manual_expenses")
+    if body.split.mode == "itemized":
+        require_feature("itemized_allocation")
     acc = load_group_access(db, public_id, ident)
     seed = body.expense_id or "preview"
     res = service.compute(body, seed, _member_ids(db, acc.group))
@@ -245,6 +249,9 @@ def preview_expense(public_id: str, body: ExpensePreviewIn, db: Session = Depend
 @router.post("", status_code=201, response_model=ExpenseDetailOut)
 def create_expense(public_id: str, body: ExpenseCreate, request: Request, db: Session = Depends(get_db),
                    ident: Identity = Depends(current_identity)):
+    require_feature("manual_expenses")
+    if body.split.mode == "itemized":
+        require_feature("itemized_allocation")
     def do():
         acc = load_group_access(db, public_id, ident, for_update=True)
         eid = parse_uuid(body.client_expense_id) if body.client_expense_id else uuid.uuid4()
@@ -297,6 +304,9 @@ def list_revisions(public_id: str, expense_id: str, db: Session = Depends(get_db
 @router.put("/{expense_id}", response_model=ExpenseDetailOut)
 def update_expense(public_id: str, expense_id: str, body: ExpenseIn, db: Session = Depends(get_db),
                    ident: Identity = Depends(current_identity), if_match: str | None = Header(default=None)):
+    require_feature("manual_expenses")
+    if body.split.mode == "itemized":
+        require_feature("itemized_allocation")
     expected = _parse_if_match(if_match)
     acc = load_group_access(db, public_id, ident, for_update=True)
     e = _load_expense(db, acc.group, expense_id, for_update=True)

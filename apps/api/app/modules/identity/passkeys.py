@@ -27,7 +27,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from app.core.config import get_settings
+from app.core.config import get_settings, require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.security import (
@@ -141,6 +141,7 @@ def _audit(db: Session, ident: Identity, action: str, **meta: Any) -> None:
 @router.post("/passkeys/register/options", response_model=OptionsOut)
 def register_options(body: RegisterOptionsIn, request: Request, db: Session = Depends(get_db),
                      ident: Identity = Depends(current_identity)) -> OptionsOut:
+    require_feature("passkeys")
     s = get_settings()
     sess = current_session(request, db)
     if ident.webauthn_user_handle is None:
@@ -164,6 +165,7 @@ def register_options(body: RegisterOptionsIn, request: Request, db: Session = De
 @router.post("/passkeys/register/verify", response_model=SessionStateOut)
 def register_verify(body: RegisterVerifyIn, request: Request, response: Response, db: Session = Depends(get_db),
                     ident: Identity = Depends(current_identity)) -> SessionStateOut:
+    require_feature("passkeys")
     s = get_settings()
     sess = current_session(request, db)
     ch = _consume_flow(db, body.flow_id, "register")
@@ -205,6 +207,7 @@ def register_verify(body: RegisterVerifyIn, request: Request, response: Response
 @router.post("/passkeys/login/options", response_model=OptionsOut)
 def login_options(request: Request, db: Session = Depends(get_db),
                   ident: Identity | None = Depends(optional_identity)) -> OptionsOut:
+    require_feature("passkeys")
     check_csrf(request)
     s = get_settings()
     opts = webauthn.generate_authentication_options(
@@ -224,6 +227,7 @@ def _decode_b64url(v: Any) -> bytes:
 @router.post("/passkeys/login/verify", response_model=SessionStateOut)
 def login_verify(body: LoginVerifyIn, request: Request, response: Response, db: Session = Depends(get_db),
                  caller: Identity | None = Depends(optional_identity)) -> SessionStateOut:
+    require_feature("passkeys")
     check_csrf(request)
     s = get_settings()
     sess = current_session(request, db)

@@ -22,6 +22,8 @@ class PlanOut(BaseModel):
 
 
 class PlansOut(BaseModel):
+    passkeys_available: bool
+    payment_destinations_available: bool
     ocr_available: bool  # 設定で有効、かつ稼働中の OCR ワーカーがある
     ads_available: bool
     billing_available: bool
@@ -36,7 +38,11 @@ def plans(db: Session = Depends(get_db)) -> PlansOut:
     """料金比較の表示用。数値はすべて設定値から返す(画面に定数を持たない)。"""
     s = get_settings()
     return PlansOut(
-        ocr_available=worker_available(db), ads_available=s.feature_ads, billing_available=s.feature_billing,
+        passkeys_available=s.feature_passkeys,
+        # 振込先は Passkey(登録・step-up)が前提。どちらかが停止中なら提供していない
+        payment_destinations_available=s.feature_passkeys and s.feature_payment_destinations,
+        ocr_available=s.feature_ocr and worker_available(db),
+        ads_available=s.feature_ads, billing_available=s.feature_billing,
         ocr_free_monthly_scans=s.ocr_free_monthly_scans, ocr_reward_scans_per_ad=s.ocr_reward_scans_per_ad,
         ocr_monthly_scan_cap=s.ocr_monthly_scan_cap,
         plans=[

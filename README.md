@@ -38,6 +38,11 @@ API テスト(`make test`)と E2E(`make e2e`)は DB を作り直します。接�
 `infra/compose.yaml` は開発用です。`WARILINK_ENVIRONMENT=production` にすると、Cookie の Secure・https の許可オリジン・
 既定以外の DB パスワードなどがそろっていない限り API は起動しません。条件は `docs/SECURITY_PRIVACY.md` §2.1 を参照してください。
 
+V0 beta はゲスト利用、グループ・招待、手入力支出、明細割り勘、円単位の精算案と手動確認を提供します。
+`WARILINK_FEATURE_PASSKEYS`、`WARILINK_FEATURE_PAYMENT_DESTINATIONS`、`WARILINK_FEATURE_OCR`、
+`WARILINK_FEATURE_ADS`、`WARILINK_FEATURE_BILLING`、`WARILINK_FEATURE_BANK_PROVIDER` は既定で `false` です。
+有効化した機能だけ API と画面に表示されます。振込先と Passkey の既存データは、機能を止めた後も一覧・削除経路を維持します。
+
 ## ローカル開発
 
 ```bash

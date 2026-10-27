@@ -11,6 +11,7 @@ import {
   type DestinationReveal,
   type Me,
   type PasskeyOptions,
+  type Plans,
 } from "@/lib/api";
 
 const TYPE_LABEL: Record<string, string> = { ordinary: "普通", checking: "当座", savings: "貯蓄" };
@@ -33,12 +34,23 @@ async function stepUp() {
   await api("/auth/passkeys/login/verify", { method: "POST", body: { flow_id: o.flow_id, credential } });
 }
 
+/** 再確認で別のアカウントの Passkey が使われた(この端末のセッションが別の人になった) */
+class IdentityChanged extends Error {}
+
+/**
+ * 再確認が必要なら Passkey で確認してから、もう一度だけ実行する。
+ * 確認の前後で本人(identity_id)が変わった場合は、元の操作を自動で再実行しない(別の人の名前で変更・共有・削除しない)。
+ * 画面での比較は表示の安全のためで、認可はサーバーが現在のセッションの本人で判断する。
+ */
 async function withStepUp<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (e) {
     if (e instanceof ApiProblem && e.code === "STEP_UP_REQUIRED") {
+      const before = (await api<Me | null>("/identity/me"))?.identity_id;
       await stepUp();
+      const after = (await api<Me | null>("/identity/me"))?.identity_id;
+      if (!before || before !== after) throw new IdentityChanged();
       return fn();
     }
     throw e;
@@ -55,11 +67,16 @@ export function DestinationPanel() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [destinationsAvailable, setDestinationsAvailable] = useState(false);
+  const [passkeysAvailable, setPasskeysAvailable] = useState(false);
 
   const load = useCallback(async () => {
     try {
       // 両方を取得してから同時に反映する(途中の状態で入力欄が一瞬表示されるのを防ぐ)
       const m = await api<Me | null>("/identity/me");
+      const plans = await api<Plans>("/plans");
+      setDestinationsAvailable(plans.payment_destinations_available);
+      setPasskeysAvailable(plans.passkeys_available);
       const d = m?.kind === "registered" ? await api<Destination | null>("/account/payment-destination") : null;
       setMe(m);
       setDest(d);
@@ -79,13 +96,28 @@ export function DestinationPanel() {
     try {
       setMessage(await fn());
     } catch (e) {
-      const name = e instanceof Error ? e.name : "";
-      setError(name === "NotAllowedError" ? "本人確認が取り消されました" : errorMessage(e));
+      if (e instanceof IdentityChanged) {
+        // 別のアカウントになった: 表示中の全桁と入力途中の内容を消し、元の操作は行わない
+        setRevealed(null);
+        setForm(EMPTY);
+        setEditing(false);
+        setError("別のアカウントの Passkey で確認されたため、操作を中止しました。表示中の内容は閉じました。");
+      } else {
+        const name = e instanceof Error ? e.name : "";
+        setError(name === "NotAllowedError" ? "本人確認が取り消されました" : errorMessage(e));
+      }
     }
     await load();
   }
 
+  // Passkey の機能が使えるときは、機密操作(削除を含む)の前に Passkey で再確認する。
+  // Passkey の機能を止めている間だけ、API は所有者による既存データの消去を再確認なしで受け付ける(API と同じ条件)。
+  async function withStepUpIfAvailable<T>(fn: () => Promise<T>): Promise<T> {
+    return passkeysAvailable ? withStepUp(fn) : fn();
+  }
+
   if (!loaded) return null;
+  if (!destinationsAvailable && !dest) return null;
   if (me?.kind !== "registered") {
     return (
       <section className="card" aria-labelledby="dest-h">
@@ -100,16 +132,16 @@ export function DestinationPanel() {
   return (
     <section className="card" aria-labelledby="dest-h">
       <h2 id="dest-h">受取口座(振込先)</h2>
-      <p className="muted">
+      {destinationsAvailable ? <p className="muted">
         暗号化して保存し、あなたに支払う精算の相手にだけ表示します(共有を許可した場合)。このアプリは送金を実行せず、銀行へのログイン情報も扱いません。
         登録・変更・全桁の表示には、Passkey での確認が必要です。
-      </p>
+      </p> : <p className="muted">V0 ベータでは新しい振込先を保存・共有できません。保存済みデータは削除できます。</p>}
       {dest && !editing && (
         <>
           <p>
             <strong>{dest.masked_label}</strong>(第{dest.version}版)
           </p>
-          <label className="row">
+          {destinationsAvailable && <label className="row">
             <input
               type="checkbox"
               checked={dest.share_with_payers}
@@ -117,16 +149,16 @@ export function DestinationPanel() {
                 // 制御された入力は await の後に元の値へ戻るため、先に値を取っておく
                 const checked = e.target.checked;
                 run(async () => {
-                  await api("/account/payment-destination/sharing", {
+                  await withStepUpIfAvailable(() => api("/account/payment-destination/sharing", {
                     method: "POST",
                     body: { share_with_payers: checked },
-                  });
+                  }));
                   return checked ? "支払う相手への表示を許可しました" : "支払う相手への表示を取り消しました";
                 });
               }}
             />
             あなたに支払う精算の相手に表示する
-          </label>
+          </label>}
           {revealed && (
             <dl aria-label="振込先の全桁">
               <dt>銀行</dt>
@@ -146,19 +178,23 @@ export function DestinationPanel() {
             </dl>
           )}
           <p className="row actions">
-            <button
+            {destinationsAvailable && <button
               type="button"
               className="secondary"
               onClick={() =>
                 run(async () => {
-                  setRevealed(revealed ? null : await withStepUp(() => api<DestinationReveal>("/account/payment-destination/reveal")));
+                  setRevealed(
+                    revealed
+                      ? null
+                      : await withStepUpIfAvailable(() => api<DestinationReveal>("/account/payment-destination/reveal")),
+                  );
                   return revealed ? "全桁の表示を閉じました" : "全桁を表示しました";
                 })
               }
             >
               {revealed ? "全桁を隠す" : "全桁を表示"}
-            </button>
-            <button
+            </button>}
+            {destinationsAvailable && <button
               type="button"
               className="secondary"
               onClick={() => {
@@ -167,13 +203,15 @@ export function DestinationPanel() {
               }}
             >
               変更する
-            </button>
+            </button>}
             <button
               type="button"
               className="secondary"
               onClick={() =>
                 run(async () => {
-                  await api("/account/payment-destination", { method: "DELETE" });
+                  // 削除は元に戻せないため、必ず確認する(取り消したら何もしない)
+                  if (!confirm("振込先を削除すると、元に戻せません。削除しますか?")) return "削除を取り消しました";
+                  await withStepUpIfAvailable(() => api("/account/payment-destination", { method: "DELETE" }));
                   setRevealed(null);
                   return "振込先を削除しました";
                 })
@@ -184,13 +222,13 @@ export function DestinationPanel() {
           </p>
         </>
       )}
-      {(!dest || editing) && (
+      {destinationsAvailable && (!dest || editing) && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
             run(async () => {
               const body = { kind: "bank", bank: form, share_with_payers: share };
-              await withStepUp(() =>
+              await withStepUpIfAvailable(() =>
                 api("/account/payment-destination", { method: dest ? "PUT" : "POST", body }),
               );
               setEditing(false);

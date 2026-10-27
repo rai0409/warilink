@@ -33,7 +33,8 @@ export default defineConfig({
       command:
         `cd ../api && WARILINK_DATABASE_URL=${DB_URL} WARILINK_ALLOWED_ORIGINS='["http://localhost:${WEB_PORT}"]' ` +
         `../../.venv/bin/alembic upgrade head && WARILINK_DATABASE_URL=${DB_URL} WARILINK_RECEIPT_STORAGE_DIR=${RECEIPTS_DIR} ` +
-        `WARILINK_ALLOWED_ORIGINS='["http://localhost:${WEB_PORT}"]' ` +
+        `WARILINK_ALLOWED_ORIGINS='["http://localhost:${WEB_PORT}"]' WARILINK_FEATURE_PASSKEYS=true ` +
+        `WARILINK_FEATURE_PAYMENT_DESTINATIONS=true WARILINK_FEATURE_OCR=true ` +
         // Node(Next の中継)の keep-alive 5 秒と uvicorn 既定の 5 秒が同じだと、閉じかけの接続を再利用して
         // ECONNRESET になることがある(2026-10-21 に 4 回中 1 回発生)。サーバー側を長くして競合を避ける
         `../../.venv/bin/uvicorn app.main:app --port ${API_PORT} --timeout-keep-alive 65`,
@@ -44,7 +45,7 @@ export default defineConfig({
     {
       // 本物の PaddleOCR ワーカー(モデル読み込みに十数秒かかる)
       command:
-        `cd ../api && WARILINK_DATABASE_URL=${DB_URL} WARILINK_RECEIPT_STORAGE_DIR=${RECEIPTS_DIR} ` +
+        `cd ../api && WARILINK_DATABASE_URL=${DB_URL} WARILINK_RECEIPT_STORAGE_DIR=${RECEIPTS_DIR} WARILINK_FEATURE_OCR=true ` +
         `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True ../../.venv/bin/python -m app.ocr.worker`,
       wait: { stderr: /ocr worker \S+ ready/ },
       reuseExistingServer: false,

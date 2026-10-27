@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.core.config import get_settings, require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.idempotency import run_idempotent
@@ -111,6 +111,7 @@ def _ensure_member_capacity(db: Session, group: Group, adding: int) -> None:
 @router.post("/groups", status_code=201, response_model=GroupOut)
 def create_group(body: GroupCreate, request: Request, db: Session = Depends(get_db),
                  ident: Identity = Depends(current_identity)):
+    require_feature("groups")
     def do():
         group = Group(public_id=secrets.token_urlsafe(12), owner_identity_id=ident.id, title=body.title)
         db.add(group)
@@ -144,6 +145,7 @@ def list_members(public_id: str, db: Session = Depends(get_db), ident: Identity 
 def add_members(public_id: str, body: MembersAdd, db: Session = Depends(get_db),
                 ident: Identity = Depends(current_identity)):
     """名前だけのメンバーを追加(アプリを使わない人も精算対象にできる)。"""
+    require_feature("groups")
     acc = load_group_access(db, public_id, ident, for_update=True)
     _ensure_member_capacity(db, acc.group, len(body.names))
     start = _next_position(db, acc.group)
@@ -160,6 +162,7 @@ def add_members(public_id: str, body: MembersAdd, db: Session = Depends(get_db),
 @router.post("/groups/{public_id}/invites", response_model=InviteOut, status_code=201)
 def create_invite(public_id: str, body: InviteCreate, db: Session = Depends(get_db),
                   ident: Identity = Depends(current_identity)):
+    require_feature("groups")
     acc = load_group_access(db, public_id, ident)
     if not acc.is_owner:
         raise ApiError(403, "ACCESS_DENIED", "招待URLを発行できるのはグループ作成者だけです")
@@ -208,6 +211,7 @@ def preview_invite(token: str, db: Session = Depends(get_db), ident: Identity = 
 @router.post("/invites/{token}/join", response_model=GroupOut)
 def join(token: str, body: JoinRequest, db: Session = Depends(get_db),
          ident: Identity = Depends(current_identity)):
+    require_feature("groups")
     # 使用回数の判定は「参加済みかどうか」を見た後に行う(参加済みの本人の再アクセスは回数を消費しない)
     inv = _valid_invite(db, token, for_update=True, check_uses=False)
     group = db.execute(select(Group).where(Group.id == inv.group_id).with_for_update()).scalar_one()

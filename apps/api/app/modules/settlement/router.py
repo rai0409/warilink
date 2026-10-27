@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.core.config import require_feature
 from app.core.db import get_db
 from app.core.errors import ApiError
 from app.core.idempotency import run_idempotent
@@ -42,6 +43,7 @@ def balances(public_id: str, db: Session = Depends(get_db), ident: Identity = De
 
 @router.post("/groups/{public_id}/settlements/preview", response_model=SettlementPlanOut)
 def preview(public_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    require_feature("settlement")
     acc = load_group_access(db, public_id, ident)
     ledger = service.load_ledger(db, acc.group)
     net, rows = service.balance_rows(ledger)
@@ -51,6 +53,7 @@ def preview(public_id: str, db: Session = Depends(get_db), ident: Identity = Dep
 @router.post("/groups/{public_id}/settlement-batches", status_code=201, response_model=BatchOut)
 def create_batch(public_id: str, body: BatchCreate, request: Request, db: Session = Depends(get_db),
                  ident: Identity = Depends(current_identity)):
+    require_feature("settlement")
     def do():
         acc = load_group_access(db, public_id, ident, for_update=True)  # グループ行ロックで直列化
         group = acc.group
@@ -148,6 +151,7 @@ def get_transfer(transfer_id: str, db: Session = Depends(get_db), ident: Identit
 @router.post("/settlements/{transfer_id}/report-paid", response_model=TransferOut)
 def report_paid(transfer_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
     """支払者による送金申告。アプリは送金を実行しない。申告は銀行での確認を意味しない。"""
+    require_feature("settlement_confirmations")
     t, me = _load_transfer_for_party(db, transfer_id, ident, for_update=True)
     if me.id != t.from_member_id:
         raise ApiError(403, "ACCESS_DENIED", "送金申告は支払う本人だけが行えます")
@@ -165,6 +169,7 @@ def report_paid(transfer_id: str, db: Session = Depends(get_db), ident: Identity
 @router.post("/settlements/{transfer_id}/confirm-received", response_model=TransferOut)
 def confirm_received(transfer_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
     """受取人による手動の受取確認。銀行による証明ではない。"""
+    require_feature("settlement_confirmations")
     t, me = _load_transfer_for_party(db, transfer_id, ident, for_update=True)
     if me.id != t.to_member_id:
         raise ApiError(403, "ACCESS_DENIED", "受取確認は受け取る本人だけが行えます")
