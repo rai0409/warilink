@@ -1,5 +1,7 @@
 """本番設定の fail-closed 検証(DB 不要)。"""
 
+import os
+
 import pytest
 from fastapi import Request
 
@@ -22,6 +24,18 @@ def make(**over) -> Settings:
 def test_safe_production_is_accepted():
     s = make()
     assert s.cookie_secure and cfg.production_problems(s) == []
+    assert not s.feature_passkeys and not s.feature_payment_destinations and not s.feature_ocr
+
+
+def test_api_test_feature_overrides_do_not_leak_into_this_process():
+    """tests/api の有効化はテストごとに戻す。同じプロセスで先に API テストが動いても、ここでは既定値のまま。
+
+    (以前は tests/api/conftest.py が import 時に環境変数を書き換え、全体実行のときだけここが失敗していた)
+    """
+    for name in ("WARILINK_FEATURE_PASSKEYS", "WARILINK_FEATURE_PAYMENT_DESTINATIONS", "WARILINK_FEATURE_OCR"):
+        assert name not in os.environ, name
+    cfg.get_settings.cache_clear()
+    s = cfg.get_settings()
     assert not s.feature_passkeys and not s.feature_payment_destinations and not s.feature_ocr
 
 

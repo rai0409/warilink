@@ -202,7 +202,7 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 
 `POST /groups/{public_id}/expenses` に任意項目 `source_receipt_id`, `review_elapsed_ms` を追加。指定時はレシートを
 `confirmed` にし、下書きとの差分を `ocr_corrections` に記録する。同じレシートの二重登録は 409 `RECEIPT_ALREADY_USED`。
-`GET /plans` の `ocr_available` は「設定で有効 かつ 稼働中のワーカーあり」。
+`GET /plans` の `ocr_available` は「設定で有効 かつ 稼働中のワーカーあり」。`passkeys_available` は `WARILINK_FEATURE_PASSKEYS`、`payment_destinations_available` は `WARILINK_FEATURE_PASSKEYS` **かつ** `WARILINK_FEATURE_PAYMENT_DESTINATIONS`(振込先は Passkey の登録・再確認が前提)。
 
 追加エラーコード: `OCR_UNAVAILABLE`(503), `OCR_QUOTA_EXCEEDED`(429), `IMAGE_TOO_LARGE`(413), `IMAGE_TYPE_UNSUPPORTED` /
 `IMAGE_UNREADABLE`(415), `IMAGE_EMPTY`, `IMAGE_EXPIRED`(410), `RECEIPT_NOT_FOUND`, `RECEIPT_ALREADY_USED`。
@@ -241,8 +241,10 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | PUT | `/account/payment-destination` | 変更 = 新しい版(以前の版は書き換えない) | 登録済み + step-up |
 | POST | `/account/payment-destination/sharing` | 支払者への表示の許可・取り消し | 登録済み本人 + step-up |
 | GET | `/account/payment-destination/reveal` | 自分の全桁 | 本人 + step-up |
-| DELETE | `/account/payment-destination` | 消去(全版の暗号文と包んだ鍵を消す) | 振込先・Passkey の両方を提供中: 登録済み本人 + step-up。いずれか停止中: 登録済み所有者による不可逆消去のみ |
+| DELETE | `/account/payment-destination` | 消去(全版の暗号文と包んだ鍵を消す) | 登録済み本人 + CSRF。Passkey の機能が有効なら(振込先の機能の状態に関係なく)step-up も必須。Passkey の機能が停止中の場合だけ、step-up なしで登録済み所有者による不可逆消去を許可 |
 | GET | `/settlements/{transfer_id}/destination` | 受取人が共有した振込先・照合コード・変更の警告 | **その送金の支払者だけ**(受取人 403、他は 404) |
+
+- V0 の機能フラグ: 振込先の登録・変更・共有設定・全桁表示・支払者への表示は、Passkey と振込先の**両方**が有効なときだけ。どちらかが停止中なら、認証(401)・CSRF(403)を通った後に `503 FEATURE_DISABLED`。本人の伏せ字の取得(GET)と既存データの消去は停止中も残す。
 
 - step-up: 直近 `step_up_max_age_seconds`(既定 600 秒)以内に Passkey で確認したセッション。満たさなければ 401 `STEP_UP_REQUIRED`
   (画面は Passkey で再確認してから同じ操作をやり直す)。

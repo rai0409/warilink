@@ -8,14 +8,16 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text, update
 
 from app.core.config import get_settings
 from app.core.db import get_engine
+from app.main import app
 from app.models.tables import SessionRow
 
 from .conftest import User, equal_expense, join_as, make_group
-from .test_passkeys import register
+from .test_passkeys import login, register
 from .webauthn_soft import SoftAuthenticator
 
 ACCOUNT = "1234567"
@@ -61,7 +63,7 @@ def raw_dump() -> str:
 
 
 def _identity_id(u: User) -> uuid.UUID:
-    return uuid.UUID(u.get("/identity/me").json()["id"])
+    return uuid.UUID(u.get("/identity/me").json()["identity_id"])
 
 
 def _set_session(u: User, **values) -> None:
@@ -256,7 +258,9 @@ def test_v0_only_allows_owner_to_cryptographically_erase_legacy_destination(user
             row = c.execute(text("SELECT wrapped_dek, nonce, ciphertext FROM payment_destination_versions")).one()
         assert row == (None, None, None)
 
-    # 機能を再度有効にしても、消去済みの秘密は読み出せない。
+    # 機能を再度有効にしても、消去済みの秘密は読み出せない(再確認の期限内のセッションでも 404)。
+    assert owner.get("/account/payment-destination/reveal").json()["code"] == "STEP_UP_REQUIRED"
+    _set_session(owner, created_at=datetime.now(UTC))
     assert owner.get("/account/payment-destination/reveal").status_code == 404
 
 
@@ -340,3 +344,94 @@ def test_production_without_keys_disables_feature_and_dev_key_is_rejected(monkey
     assert any("開発用の鍵" in m for m in production_problems(bad))
     broken = prod.model_copy(update={"destination_keys": {"x": "short"}, "destination_active_key": "x"})
     assert any("DESTINATION_KEYS" in m for m in production_problems(broken))
+
+
+# ---------------------------------------------------------------- STEP1: 機能フラグ(Passkey × 振込先の 4 通り)
+
+FLAG_COMBINATIONS = [(True, True), (True, False), (False, True), (False, False)]
+
+
+@pytest.mark.parametrize(("payment_destinations", "passkeys"), FLAG_COMBINATIONS)
+def test_normal_destination_operations_require_both_features(user_factory, monkeypatch, payment_destinations,
+                                                              passkeys):
+    o, p, q, r, outsider, pid, ids, t = scenario(user_factory)
+    assert p.post("/account/payment-destination", json=bank()).status_code == 201  # 両方 ON の状態で登録しておく
+    enabled = payment_destinations and passkeys
+    with _feature_flags(monkeypatch, payment_destinations=payment_destinations, passkeys=passkeys):
+        calls = (
+            ("PUT", p.put, "/account/payment-destination", {"json": bank(account_number="7654321")}),
+            ("sharing", p.post, "/account/payment-destination/sharing", {"json": {"share_with_payers": True}}),
+            ("reveal", p.get, "/account/payment-destination/reveal", {}),
+            ("payer", q.get, f"/settlements/{t['id']}/destination", {}),
+            ("POST", q.post, "/account/payment-destination", {"json": bank()}),
+        )
+        for label, fn, path, kw in calls:
+            res = fn(path, **kw)
+            if enabled:
+                assert res.status_code != 503, label
+            else:
+                assert res.status_code == 503 and res.json()["code"] == "FEATURE_DISABLED", label
+        # 伏せ字の一覧(本人)は機能停止中も読める(既存データの確認・削除のため)
+        mine = p.get("/account/payment-destination")
+        assert mine.status_code == 200 and "***" in mine.json()["masked_label"]
+        # 認証・CSRF の境界は機能停止より先に判定する
+        anon = TestClient(app, headers={"X-WariLink-CSRF": "1"})
+        assert anon.post("/api/v1/account/payment-destination", json=bank()).status_code == 401
+        bad = p.c.post("/api/v1/account/payment-destination", json=bank(), headers={"X-WariLink-CSRF": "0"})
+        assert bad.status_code == 403 and bad.json()["code"] == "CSRF_REJECTED"
+
+
+# ---------------------------------------------------------------- STEP2: 削除の再確認(Passkey の機能の状態で決まる)
+
+def _encrypted_count() -> int:
+    with get_engine().connect() as c:
+        return c.execute(text("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL")
+                         ).scalar_one()
+
+
+def _erase_audits() -> list[dict]:
+    with get_engine().connect() as c:
+        q = text("SELECT safe_metadata FROM audit_events WHERE action = 'destination.erase'")
+        rows = c.execute(q).scalars().all()
+    return [r or {} for r in rows]
+
+
+@pytest.mark.parametrize(("payment_destinations", "passkeys"), FLAG_COMBINATIONS)
+def test_erase_requires_step_up_whenever_passkeys_are_enabled(user_factory, monkeypatch, payment_destinations,
+                                                              passkeys):
+    u = user_factory()
+    registered(u)
+    assert u.put("/account/payment-destination", json=bank()).status_code in (404, 409)  # まだ無い
+    assert u.post("/account/payment-destination", json=bank()).status_code == 201
+    assert u.put("/account/payment-destination", json=bank(account_number="7654321")).status_code == 200  # 2 版
+    _set_session(u, created_at=datetime.now(UTC) - timedelta(hours=1))  # 再確認の期限切れ
+    with _feature_flags(monkeypatch, payment_destinations=payment_destinations, passkeys=passkeys):
+        r = u.delete("/account/payment-destination")
+        if passkeys:
+            # Passkey が使えるなら、振込先の機能を止めていても再確認を省略しない。状態は何も変わらない
+            assert r.status_code == 401 and r.json()["code"] == "STEP_UP_REQUIRED"
+            assert _encrypted_count() == 2 and _erase_audits() == []
+            assert u.get("/account/payment-destination").json()["masked_label"].endswith("4321")
+            _set_session(u, created_at=datetime.now(UTC))
+            r = u.delete("/account/payment-destination")
+        assert r.status_code == 204
+    assert _encrypted_count() == 0  # すべての版の暗号文を消す
+    (audit,) = _erase_audits()
+    assert audit.get("legacy_feature_disabled") is (not passkeys)  # 例外は Passkey 停止中だけ
+    assert ACCOUNT not in raw_dump() and "7654321" not in raw_dump()  # 監査にも平文を残さない
+    mine = u.get("/account/payment-destination").json()
+    assert mine is None or mine.get("share_with_payers") is False
+
+
+def test_step_up_that_switches_account_cannot_touch_the_original_owners_data(user_factory):
+    """別のアカウントの Passkey で再確認すると、そのセッションは別アカウントになる。元の所有者の振込先は消えない。"""
+    a, b = user_factory(), user_factory()
+    registered(a)
+    b_auth = registered(b)
+    assert a.post("/account/payment-destination", json=bank()).status_code == 201
+    a_id = _identity_id(a)
+    assert login(a.c, b_auth).status_code == 200  # A の端末で B の Passkey を使ってしまった
+    assert _identity_id(a) != a_id  # サーバーは現在のセッションの本人(B)で判断する
+    assert a.delete("/account/payment-destination").status_code == 404  # B には振込先が無い
+    assert a.post("/account/payment-destination/sharing", json={"share_with_payers": False}).status_code == 404
+    assert _encrypted_count() == 1 and _erase_audits() == []

@@ -34,12 +34,23 @@ async function stepUp() {
   await api("/auth/passkeys/login/verify", { method: "POST", body: { flow_id: o.flow_id, credential } });
 }
 
+/** 再確認で別のアカウントの Passkey が使われた(この端末のセッションが別の人になった) */
+class IdentityChanged extends Error {}
+
+/**
+ * 再確認が必要なら Passkey で確認してから、もう一度だけ実行する。
+ * 確認の前後で本人(identity_id)が変わった場合は、元の操作を自動で再実行しない(別の人の名前で変更・共有・削除しない)。
+ * 画面での比較は表示の安全のためで、認可はサーバーが現在のセッションの本人で判断する。
+ */
 async function withStepUp<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (e) {
     if (e instanceof ApiProblem && e.code === "STEP_UP_REQUIRED") {
+      const before = (await api<Me | null>("/identity/me"))?.identity_id;
       await stepUp();
+      const after = (await api<Me | null>("/identity/me"))?.identity_id;
+      if (!before || before !== after) throw new IdentityChanged();
       return fn();
     }
     throw e;
@@ -85,13 +96,22 @@ export function DestinationPanel() {
     try {
       setMessage(await fn());
     } catch (e) {
-      const name = e instanceof Error ? e.name : "";
-      setError(name === "NotAllowedError" ? "本人確認が取り消されました" : errorMessage(e));
+      if (e instanceof IdentityChanged) {
+        // 別のアカウントになった: 表示中の全桁と入力途中の内容を消し、元の操作は行わない
+        setRevealed(null);
+        setForm(EMPTY);
+        setEditing(false);
+        setError("別のアカウントの Passkey で確認されたため、操作を中止しました。表示中の内容は閉じました。");
+      } else {
+        const name = e instanceof Error ? e.name : "";
+        setError(name === "NotAllowedError" ? "本人確認が取り消されました" : errorMessage(e));
+      }
     }
     await load();
   }
 
-  // V0 の既存データ消去は Passkey 機能停止中でも許可される。提供中の機密操作だけ再認証する。
+  // Passkey の機能が使えるときは、機密操作(削除を含む)の前に Passkey で再確認する。
+  // Passkey の機能を止めている間だけ、API は所有者による既存データの消去を再確認なしで受け付ける(API と同じ条件)。
   async function withStepUpIfAvailable<T>(fn: () => Promise<T>): Promise<T> {
     return passkeysAvailable ? withStepUp(fn) : fn();
   }
@@ -158,7 +178,7 @@ export function DestinationPanel() {
             </dl>
           )}
           <p className="row actions">
-            <button
+            {destinationsAvailable && <button
               type="button"
               className="secondary"
               onClick={() =>
@@ -173,7 +193,7 @@ export function DestinationPanel() {
               }
             >
               {revealed ? "全桁を隠す" : "全桁を表示"}
-            </button>
+            </button>}
             {destinationsAvailable && <button
               type="button"
               className="secondary"
@@ -189,6 +209,8 @@ export function DestinationPanel() {
               className="secondary"
               onClick={() =>
                 run(async () => {
+                  // 削除は元に戻せないため、必ず確認する(取り消したら何もしない)
+                  if (!confirm("振込先を削除すると、元に戻せません。削除しますか?")) return "削除を取り消しました";
                   await withStepUpIfAvailable(() => api("/account/payment-destination", { method: "DELETE" }));
                   setRevealed(null);
                   return "振込先を削除しました";

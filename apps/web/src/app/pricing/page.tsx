@@ -15,7 +15,8 @@ export default function PricingPage() {
     <>
       <h1>料金プラン</h1>
       {error && <p className="error" role="alert">{error}</p>}
-      {plans && plans.ocr_available && (
+      {/* OCR を止めていても料金表は表示する(読み取りは「停止中」と明示し、利用できるとは示さない) */}
+      {plans && (
         <>
           <p className="notice warn">
             {plans.ocr_available
