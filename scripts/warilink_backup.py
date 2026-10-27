@@ -38,6 +38,9 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 TABLES = ["identities", "groups", "memberships", "expenses", "expense_shares", "settlement_batches",
           "settlement_transfers", "receipts", "receipt_jobs", "ocr_runs", "ocr_corrections", "ocr_quota_ledger",
           "audit_events"]
+# 濫用対策の回数制限の記録は一時データ(IP などの鍵つきハッシュ)。保持する必要がなく、復元すると古い制限が
+# 戻るため、表の定義だけをダンプし中身は含めない。件数の照合(TABLES)の対象外。
+EXCLUDED_TABLE_DATA = ["rate_limit_events"]
 
 
 class Refused(Exception):
@@ -91,7 +94,8 @@ def cmd_backup(args: argparse.Namespace) -> int:
     before = snapshot(args, args.db)
     dump = out / "db.dump"
     with dump.open("wb") as f:
-        pg(args, "pg_dump", "-U", args.user, "-d", args.db, "-Fc", "--no-owner", "--no-privileges", stdout=f)
+        pg(args, "pg_dump", "-U", args.user, "-d", args.db, "-Fc", "--no-owner", "--no-privileges",
+           *(f"--exclude-table-data={t}" for t in EXCLUDED_TABLE_DATA), stdout=f)
     # 画像はダンプの直後に複写する。ダンプ後に増えた画像は DB に無いので orphan、ダンプ後に消えた画像は missing として検出する
     src = Path(args.receipts_dir)
     files = {}

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import require_feature
 from app.core.db import get_db
-from app.core.security import check_csrf, create_guest_session, current_session, optional_identity
+from app.core.security import check_csrf, create_guest_session, current_session, optional_identity, rate_limit
 from app.models.tables import Identity, PasskeyCredential
 
 from .passkeys import router as passkeys_router
@@ -30,6 +30,8 @@ def start_guest(request: Request, response: Response, db: Session = Depends(get_
     check_csrf(request)
     if existing is not None:
         return IdentityOut(identity_id=str(existing.id), kind=existing.kind)
+    # 新規作成だけを数える(Cookie を消して作り直すゲストも同じ IP・全体の上限に入る)
+    rate_limit(request, "guest_create")
     ident = create_guest_session(db, response)
     db.commit()
     return IdentityOut(identity_id=str(ident.id), kind=ident.kind)

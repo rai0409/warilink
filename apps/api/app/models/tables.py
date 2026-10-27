@@ -88,6 +88,23 @@ class WebauthnChallenge(Base):
     __table_args__ = (CheckConstraint("purpose IN ('register','authenticate')", name="ck_challenge_purpose"),)
 
 
+class RateLimitEvent(Base):
+    """濫用対策の回数制限の記録(app/core/security.py)。IP・ID・招待 token はそのまま保存せず、鍵つきハッシュだけを持つ。
+
+    一時データであり、期間を過ぎた行は記録のたびに消す。バックアップには中身を含めない(scripts/warilink_backup.py)。
+    """
+
+    __tablename__ = "rate_limit_events"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    bucket: Mapped[str] = mapped_column(String(48), nullable=False)  # "guest_create:ip" など
+    key_hash: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = _created()
+    __table_args__ = (
+        Index("ix_rate_limit_lookup", "bucket", "key_hash", "created_at"),
+        Index("ix_rate_limit_created", "created_at"),
+    )
+
+
 class SessionRow(Base):
     __tablename__ = "sessions"
     id: Mapped[uuid.UUID] = _uuid_pk()

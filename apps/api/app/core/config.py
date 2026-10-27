@@ -1,3 +1,4 @@
+import ipaddress
 from functools import lru_cache
 from urllib.parse import urlsplit
 
@@ -87,6 +88,17 @@ class Settings(BaseSettings):
     # 本人の再確認(step-up): 振込先の登録・変更・全桁表示は、この秒数以内に Passkey で確認したセッションだけ
     step_up_max_age_seconds: int = 600
 
+    # 濫用対策の回数制限(app/core/security.py の RATE_LIMITS)。IP は秘密鍵つきのハッシュだけを保存する
+    # None = 本番だけ有効(開発・E2E は全員が 127.0.0.1 から来るため既定で無効。API テストは明示的に有効化して検証する)
+    rate_limits_enabled: bool | None = None
+    rate_limit_secret: str | None = None  # 本番は 32 文字以上が必須
+    trusted_proxies: list[str] = []  # X-Forwarded-For を信頼する中継(IP / CIDR)。本番では Web(Next)の中継が必須
+    rate_limit_overrides: dict[str, tuple[int, int]] = {}  # {"guest_create:ip": [上限回数, 期間の秒数]}
+
+    @property
+    def rate_limits_active(self) -> bool:
+        return self.environment == "production" if self.rate_limits_enabled is None else self.rate_limits_enabled
+
     # 振込先の暗号化鍵(KEK)。{"版": "base64 の 32 バイト"}。DB・バックアップには入れない。
     # 未設定のとき、development / test は開発用の固定鍵を使い、production は振込先機能を停止する(503)
     destination_keys: dict[str, str] = {}
@@ -97,6 +109,39 @@ class Settings(BaseSettings):
         if self.webauthn_rp_id:
             return self.webauthn_rp_id
         return (urlsplit(self.allowed_origins[0]).hostname or "") if self.allowed_origins else ""
+
+
+# 本番で受け付ける回数制限の範囲(誤設定で制限が実質無効になる・正常利用を止めることを防ぐ)
+RATE_LIMIT_BOUNDS = {"limit": (1, 10_000), "window": (10, 86_400)}
+
+
+def rate_limit_problems(s: "Settings") -> list[str]:
+    # security が config を読むため、ここで読み込む
+    from app.core.security import RATE_LIMITS  # noqa: PLC0415
+
+    out: list[str] = []
+    if s.rate_limits_enabled is False:
+        out.append("本番では回数制限を無効にできません(WARILINK_RATE_LIMITS_ENABLED)")
+    if not s.rate_limit_secret or len(s.rate_limit_secret) < 32:
+        out.append("WARILINK_RATE_LIMIT_SECRET に 32 文字以上のランダムな値を指定してください")
+    if not s.trusted_proxies:
+        # Web(Next)が API を中継するため、未設定だと全員が Next の IP として数えられる
+        out.append("WARILINK_TRUSTED_PROXIES に API を中継するサーバー(Web)の IP / CIDR を指定してください")
+    for n in s.trusted_proxies:
+        try:
+            ipaddress.ip_network(n, strict=False)
+        except ValueError:
+            out.append("WARILINK_TRUSTED_PROXIES は IP アドレスか CIDR の一覧にしてください")
+            break
+    lo_l, hi_l = RATE_LIMIT_BOUNDS["limit"]
+    lo_w, hi_w = RATE_LIMIT_BOUNDS["window"]
+    for name, (limit, window) in s.rate_limit_overrides.items():
+        if name not in RATE_LIMITS:
+            out.append(f"WARILINK_RATE_LIMIT_OVERRIDES に不明な制限名があります: {name}")
+        elif not (lo_l <= limit <= hi_l and lo_w <= window <= hi_w):
+            out.append(f"WARILINK_RATE_LIMIT_OVERRIDES の {name} は"
+                       f"回数 {lo_l}〜{hi_l}、期間 {lo_w}〜{hi_w} 秒にしてください")
+    return out
 
 
 def production_problems(s: "Settings") -> list[str]:
@@ -128,6 +173,7 @@ def production_problems(s: "Settings") -> list[str]:
         from app.modules.payment_destinations.crypto import key_problems  # noqa: PLC0415
 
         out.extend(key_problems(s))
+    out.extend(rate_limit_problems(s))
     if s.feature_ads or s.feature_billing:
         out.append("広告・課金は未実装のため本番で有効にできません(WARILINK_FEATURE_ADS / WARILINK_FEATURE_BILLING)")
     return out

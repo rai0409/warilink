@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core import errors
 from app.core.config import get_settings
+from app.core.security import RateLimited
 from app.modules.expenses.router import router as expenses_router
 from app.modules.groups.router import router as groups_router
 from app.modules.identity.router import router as identity_router
@@ -37,6 +38,14 @@ def create_app() -> FastAPI:
         return response
 
     errors.install(app)
+
+    @app.exception_handler(RateLimited)
+    async def _rate_limited(request: Request, exc: RateLimited):
+        # 本文は他の ApiError と同じ形式。次に試せるまでの秒数を Retry-After でも返す
+        response = errors._problem(request, exc.status, exc.code, exc.detail, **exc.extra)
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response
+
     for r in (identity_router, groups_router, expenses_router, settlement_router, meta_router,
               receipts_router, destinations_router):
         app.include_router(r, prefix=API_PREFIX)

@@ -154,6 +154,7 @@
   `nickname`、`last_used_at`、`revoked_at`(論理削除)。秘密鍵はサーバーに存在しない。
 - `webauthn_challenges`: `flow_hash`(クライアントに渡す flow_id の SHA-256)、`purpose`、`challenge`、開始した `identity_id` / `session_id`、
   `rp_id`、`expires_at`(既定 300 秒)、`used_at`(1 回だけ)。
+- `rate_limit_events`(STEP3): 濫用対策の回数制限の記録。`bucket`("guest_create:ip" など)、`key_hash`(IP・ID・token の HMAC-SHA256 の先頭 32 文字。生の値は保存しない)、`created_at`。一時データで、期間を過ぎた行は記録のたびに削除する。バックアップには中身を含めない(`scripts/warilink_backup.py` の `EXCLUDED_TABLE_DATA`)。
 - `sessions.assurance_level` に `passkey` を使う(既存の `guest` はそのまま)。
 - ログイン時に「この端末のゲストのグループを移す」を選ぶと、ゲストの `memberships.identity_id` を登録済み identity に付け替える
   (両方が同じグループにいる場合は移さない)。OCR の利用枠の台帳は移さない(Cookie の作り直しによる枠の増加を防ぐ)。
