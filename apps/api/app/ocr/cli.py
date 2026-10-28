@@ -108,16 +108,22 @@ def cmd_purge(a: argparse.Namespace) -> int:
     from sqlalchemy.orm import Session  # noqa: PLC0415
 
     from app.core.db import get_engine  # noqa: PLC0415
+    from app.modules.identity.retention import purge_retention  # noqa: PLC0415
     from app.ocr.images import purge_expired  # noqa: PLC0415
 
     with Session(get_engine()) as db:
         res = purge_expired(db, dry_run=a.dry_run)
+        # 保持期限を過ぎた一時データ・監査ログ・グループも同じジョブで消す(docs/DATA_MODEL.md §11)
+        retention = {} if a.dry_run else purge_retention(db)
+    challenges = retention.get("webauthn_challenges", 0)
     if a.json:
-        print(json.dumps(res.to_json(), ensure_ascii=False))
+        print(json.dumps({**res.to_json(), "webauthn_challenges_deleted": challenges, "retention": retention},
+                         ensure_ascii=False))
     else:
         verb = "削除対象" if a.dry_run else "削除"
         print(f"{verb}: {res.candidates if a.dry_run else res.deleted} 枚(保存期間 {res.retention_days} 日)"
-              + (f" / 失敗 {len(res.failed)} 枚" if res.failed else ""))
+              + (f" / 失敗 {len(res.failed)} 枚" if res.failed else "")
+              + ("" if a.dry_run else f" / 期限切れの認証用データ {challenges} 件"))
     return 1 if res.failed else 0
 
 

@@ -25,6 +25,8 @@ from app.core.security import (
 )
 from app.models.tables import AuditEvent, Group, Identity, Invitation, Membership
 
+from .lifecycle import mark_if_orphaned, release_owner, require_open, transfer_owner
+
 router = APIRouter(tags=["groups"])
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
@@ -46,6 +48,7 @@ class GroupOut(BaseModel):
     ledger_version: int
     my_member_id: str
     is_owner: bool
+    closed: bool = False  # 作成者が終了したグループ(閲覧のみ)
     members: list[MemberOut]
 
 
@@ -91,6 +94,7 @@ def group_out(db: Session, group: Group, me: Membership) -> GroupOut:
     return GroupOut(
         public_id=group.public_id, title=group.title, currency=group.currency,
         ledger_version=group.ledger_version, my_member_id=str(me.id), is_owner=me.role == "owner",
+        closed=group.closed_at is not None,
         members=[MemberOut(id=str(m.id), display_name=m.display_name, role=m.role,
                            claimed=m.identity_id is not None, is_me=m.id == me.id)
                  for m in _active_members(db, group)],
@@ -149,6 +153,7 @@ def add_members(public_id: str, body: MembersAdd, db: Session = Depends(get_db),
     """名前だけのメンバーを追加(アプリを使わない人も精算対象にできる)。"""
     require_feature("groups")
     acc = load_group_access(db, public_id, ident, for_update=True)
+    require_open(acc.group)
     _ensure_member_capacity(db, acc.group, len(body.names))
     start = _next_position(db, acc.group)
     for i, n in enumerate(body.names):
@@ -167,6 +172,7 @@ def create_invite(public_id: str, body: InviteCreate, request: Request, db: Sess
     require_feature("groups")
     rate_limit(request, "invite_create", identity=ident)
     acc = load_group_access(db, public_id, ident)
+    require_open(acc.group)
     if not acc.is_owner:
         raise ApiError(403, "ACCESS_DENIED", "招待URLを発行できるのはグループ作成者だけです")
     s = get_settings()
@@ -179,6 +185,83 @@ def create_invite(public_id: str, body: InviteCreate, request: Request, db: Sess
     db.add(inv)
     db.commit()
     return InviteOut(token=token, expires_at=inv.expires_at.isoformat(), max_uses=inv.max_uses)
+
+
+class InviteRevokeOut(BaseModel):
+    revoked: int
+
+
+@router.post("/groups/{public_id}/invites/revoke", response_model=InviteRevokeOut)
+def revoke_invites(public_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    """有効な招待 URL をすべて使えなくする(作成者だけ)。参加済みのメンバーはそのまま。"""
+    require_feature("groups")
+    acc = load_group_access(db, public_id, ident, for_update=True)
+    if not acc.is_owner:
+        raise ApiError(403, "ACCESS_DENIED", "招待URLを無効にできるのはグループ作成者だけです")
+    ids = db.execute(update(Invitation).where(Invitation.group_id == acc.group.id, Invitation.revoked_at.is_(None))
+                     .values(revoked_at=now()).returning(Invitation.id)).scalars().all()
+    db.add(AuditEvent(actor_identity_id=ident.id, action="group.invites.revoke", target_type="group",
+                      target_id=str(acc.group.id), safe_metadata={"revoked": len(ids)}))
+    db.commit()
+    return InviteRevokeOut(revoked=len(ids))
+
+
+@router.post("/groups/{public_id}/leave", response_model=None, status_code=204)
+def leave_group(public_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)) -> None:
+    """グループから抜ける。メンバー行は名前だけ残して本人との結び付きを外す(支出・精算の金額と履歴は変えない)。
+
+    作成者が抜けるときは、参加の早い参加者へ自動で引き継ぐ。誰もいなければ参加者不在になり、一定期間後に完全に削除する。
+    抜けた後は、このグループを見られない(404)。
+    """
+    acc = load_group_access(db, public_id, ident, for_update=True)
+    if acc.is_owner:
+        release_owner(db, acc.group, acc.member)
+    acc.member.identity_id = None
+    mark_if_orphaned(db, acc.group)
+    db.add(AuditEvent(actor_identity_id=ident.id, action="group.leave", target_type="group",
+                      target_id=str(acc.group.id), safe_metadata={}))
+    db.commit()
+
+
+class OwnerTransferIn(BaseModel):
+    member_id: str
+
+
+@router.post("/groups/{public_id}/owner", response_model=GroupOut)
+def change_owner(public_id: str, body: OwnerTransferIn, db: Session = Depends(get_db),
+                 ident: Identity = Depends(current_identity)):
+    """作成者を、参加済みの別のメンバーへ引き継ぐ(作成者だけ)。"""
+    acc = load_group_access(db, public_id, ident, for_update=True)
+    if not acc.is_owner:
+        raise ApiError(403, "ACCESS_DENIED", "引き継げるのはグループを作成した人だけです")
+    target = db.execute(select(Membership).where(
+        Membership.id == parse_uuid(body.member_id), Membership.group_id == acc.group.id,
+        Membership.status == "active")).scalar_one_or_none()
+    if target is None or target.identity_id is None or target.id == acc.member.id:
+        raise ApiError(422, "VALIDATION_ERROR", "引き継ぐ相手には、参加済みの別のメンバーを選んでください")
+    transfer_owner(db, acc.group, acc.member, target, reason="manual")
+    db.flush()
+    out = group_out(db, acc.group, acc.member)
+    db.commit()
+    return out
+
+
+@router.post("/groups/{public_id}/close", response_model=GroupOut)
+def close_group(public_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    """グループを終了する(作成者だけ)。以後は閲覧のみで、一定期間後に完全に削除する。招待はすべて失効する。"""
+    acc = load_group_access(db, public_id, ident, for_update=True)
+    if not acc.is_owner:
+        raise ApiError(403, "ACCESS_DENIED", "終了できるのはグループを作成した人だけです")
+    require_open(acc.group)
+    acc.group.closed_at = now()
+    db.execute(update(Invitation).where(Invitation.group_id == acc.group.id, Invitation.revoked_at.is_(None))
+               .values(revoked_at=now()))
+    db.add(AuditEvent(actor_identity_id=ident.id, action="group.close", target_type="group",
+                      target_id=str(acc.group.id), safe_metadata={}))
+    db.flush()
+    out = group_out(db, acc.group, acc.member)
+    db.commit()
+    return out
 
 
 def _invite_error() -> ApiError:
@@ -244,6 +327,7 @@ def _join(token: str, body: JoinRequest, db: Session, ident: Identity):
     # 使用回数の判定は「参加済みかどうか」を見た後に行う(参加済みの本人の再アクセスは回数を消費しない)
     inv = _valid_invite(db, token, for_update=True, check_uses=False)
     group = db.execute(select(Group).where(Group.id == inv.group_id).with_for_update()).scalar_one()
+    require_open(group)
     existing = db.execute(select(Membership).where(
         Membership.group_id == group.id, Membership.identity_id == ident.id)).scalar_one_or_none()
     if existing is not None:
@@ -272,6 +356,7 @@ def _join(token: str, body: JoinRequest, db: Session, ident: Identity):
                         position=_next_position(db, group))
         db.add(me)
     inv.uses += 1
+    group.orphaned_at = None  # 参加者が戻ったので、参加者不在による削除は取りやめる
     db.add(AuditEvent(actor_identity_id=ident.id, action="group.join", target_type="group",
                       target_id=str(group.id)))
     db.flush()

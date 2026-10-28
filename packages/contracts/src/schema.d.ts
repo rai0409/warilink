@@ -143,6 +143,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Account */
+        delete: operations["delete_account_api_v1_account_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/identity/guest": {
         parameters: {
             query?: never;
@@ -246,6 +263,89 @@ export interface paths {
         put?: never;
         /** Create Invite */
         post: operations["create_invite_api_v1_groups__public_id__invites_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/invites/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Invites
+         * @description 有効な招待 URL をすべて使えなくする(作成者だけ)。参加済みのメンバーはそのまま。
+         */
+        post: operations["revoke_invites_api_v1_groups__public_id__invites_revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/leave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Leave Group
+         * @description グループから抜ける。メンバー行は名前だけ残して本人との結び付きを外す(支出・精算の金額と履歴は変えない)。
+         *
+         *     作成者が抜けるときは、参加の早い参加者へ自動で引き継ぐ。誰もいなければ参加者不在になり、一定期間後に完全に削除する。
+         *     抜けた後は、このグループを見られない(404)。
+         */
+        post: operations["leave_group_api_v1_groups__public_id__leave_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/owner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change Owner
+         * @description 作成者を、参加済みの別のメンバーへ引き継ぐ(作成者だけ)。
+         */
+        post: operations["change_owner_api_v1_groups__public_id__owner_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close Group
+         * @description グループを終了する(作成者だけ)。以後は閲覧のみで、一定期間後に完全に削除する。招待はすべて失効する。
+         */
+        post: operations["close_group_api_v1_groups__public_id__close_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -641,7 +741,10 @@ export interface paths {
         post: operations["create_api_v1_account_payment_destination_post"];
         /**
          * Erase
-         * @description 消去: すべての版の暗号文と包んだ鍵を消し、復号できなくする(伏せ字の表示だけ残る)。
+         * @description 消去: Passkey の機能が有効なら(振込先の機能の状態に関係なく)step-up を要求する。
+         *
+         *     Passkey の機能を止めている間だけは再確認の手段がないため、登録済みの所有者が CSRF を通った有効なセッションで
+         *     既存データを不可逆に消すことだけを例外として許可する。この例外で共有・復号・変更はできない。
          */
         delete: operations["erase_api_v1_account_payment_destination_delete"];
         options?: never;
@@ -724,6 +827,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AccountDeleteIn */
+        AccountDeleteIn: {
+            /**
+             * Confirm
+             * @constant
+             */
+            confirm: true;
+        };
+        /** AccountDeleteOut */
+        AccountDeleteOut: {
+            /** Groups Left */
+            groups_left: number;
+            /** Destination Erased */
+            destination_erased: boolean;
+        };
         /** AdjustmentIn */
         AdjustmentIn: {
             /** Id */
@@ -1115,6 +1233,11 @@ export interface components {
             my_member_id: string;
             /** Is Owner */
             is_owner: boolean;
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
             /** Members */
             members: components["schemas"]["MemberOut"][];
         };
@@ -1181,6 +1304,11 @@ export interface components {
             group_title: string;
             /** Unclaimed Members */
             unclaimed_members: components["schemas"]["MemberOut"][];
+        };
+        /** InviteRevokeOut */
+        InviteRevokeOut: {
+            /** Revoked */
+            revoked: number;
         };
         /** IssueOut */
         IssueOut: {
@@ -1319,6 +1447,11 @@ export interface components {
             options: {
                 [key: string]: unknown;
             };
+        };
+        /** OwnerTransferIn */
+        OwnerTransferIn: {
+            /** Member Id */
+            member_id: string;
         };
         /** PasskeyOut */
         PasskeyOut: {
@@ -1885,6 +2018,39 @@ export interface operations {
             };
         };
     };
+    delete_account_api_v1_account_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountDeleteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDeleteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     start_guest_api_v1_identity_guest_post: {
         parameters: {
             query?: never;
@@ -2077,6 +2243,132 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InviteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invites_api_v1_groups__public_id__invites_revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteRevokeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    leave_group_api_v1_groups__public_id__leave_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    change_owner_api_v1_groups__public_id__owner_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerTransferIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_group_api_v1_groups__public_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupOut"];
                 };
             };
             /** @description Validation Error */

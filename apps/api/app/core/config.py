@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     ocr_max_pending_per_identity: int = 3  # 読み取り待ち・処理中のジョブ数
     ocr_max_queue_backlog: int = 100  # 全体の読み取り待ち。超えたら 503(時間をおいて再試行)
     receipt_image_retention_days: int = 30  # 期限後は画像だけ削除(`python -m app.ocr.cli purge-images`)
+    # データの保持(STEP4、docs/DATA_MODEL.md §11)。期限処理は purge-images の定期ジョブで行う
+    audit_log_retention_days: int = 365
+    expired_session_retention_days: int = 30  # 失効・期限切れのセッションを消すまで
+    expired_invite_retention_days: int = 30  # 失効・期限切れ・使い切りの招待を消すまで
+    tombstone_retention_days: int = 30  # 削除済み一覧(バックアップの保持日数と同じにする)
+    orphaned_group_retention_days: int = 30  # 参加者がいなくなったグループを完全に削除するまで
+    closed_group_retention_days: int = 365  # 終了したグループを完全に削除するまで
     ocr_job_max_attempts: int = 3
     ocr_job_lease_seconds: int = 120
     ocr_job_retry_backoff_seconds: int = 10

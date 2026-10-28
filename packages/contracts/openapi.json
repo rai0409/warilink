@@ -260,6 +260,48 @@
         }
       }
     },
+    "/api/v1/account": {
+      "delete": {
+        "tags": [
+          "identity",
+          "identity"
+        ],
+        "summary": "Delete Account",
+        "operationId": "delete_account_api_v1_account_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeleteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeleteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/identity/guest": {
       "post": {
         "tags": [
@@ -526,6 +568,181 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InviteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/invites/revoke": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Revoke Invites",
+        "description": "有効な招待 URL をすべて使えなくする(作成者だけ)。参加済みのメンバーはそのまま。",
+        "operationId": "revoke_invites_api_v1_groups__public_id__invites_revoke_post",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteRevokeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/leave": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Leave Group",
+        "description": "グループから抜ける。メンバー行は名前だけ残して本人との結び付きを外す(支出・精算の金額と履歴は変えない)。\n\n作成者が抜けるときは、参加の早い参加者へ自動で引き継ぐ。誰もいなければ参加者不在になり、一定期間後に完全に削除する。\n抜けた後は、このグループを見られない(404)。",
+        "operationId": "leave_group_api_v1_groups__public_id__leave_post",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/owner": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Change Owner",
+        "description": "作成者を、参加済みの別のメンバーへ引き継ぐ(作成者だけ)。",
+        "operationId": "change_owner_api_v1_groups__public_id__owner_post",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTransferIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/close": {
+      "post": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Close Group",
+        "description": "グループを終了する(作成者だけ)。以後は閲覧のみで、一定期間後に完全に削除する。招待はすべて失効する。",
+        "operationId": "close_group_api_v1_groups__public_id__close_post",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupOut"
                 }
               }
             }
@@ -1973,7 +2190,7 @@
           "payment-destinations"
         ],
         "summary": "Erase",
-        "description": "消去: すべての版の暗号文と包んだ鍵を消し、復号できなくする(伏せ字の表示だけ残る)。",
+        "description": "消去: Passkey の機能が有効なら(振込先の機能の状態に関係なく)step-up を要求する。\n\nPasskey の機能を止めている間だけは再確認の手段がないため、登録済みの所有者が CSRF を通った有効なセッションで\n既存データを不可逆に消すことだけを例外として許可する。この例外で共有・復号・変更はできない。",
         "operationId": "erase_api_v1_account_payment_destination_delete",
         "responses": {
           "204": {
@@ -2113,6 +2330,38 @@
   },
   "components": {
     "schemas": {
+      "AccountDeleteIn": {
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "const": true,
+            "title": "Confirm"
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "title": "AccountDeleteIn"
+      },
+      "AccountDeleteOut": {
+        "properties": {
+          "groups_left": {
+            "type": "integer",
+            "title": "Groups Left"
+          },
+          "destination_erased": {
+            "type": "boolean",
+            "title": "Destination Erased"
+          }
+        },
+        "type": "object",
+        "required": [
+          "groups_left",
+          "destination_erased"
+        ],
+        "title": "AccountDeleteOut"
+      },
       "AdjustmentIn": {
         "properties": {
           "id": {
@@ -3323,6 +3572,11 @@
             "type": "boolean",
             "title": "Is Owner"
           },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed",
+            "default": false
+          },
           "members": {
             "items": {
               "$ref": "#/components/schemas/MemberOut"
@@ -3519,6 +3773,19 @@
           "unclaimed_members"
         ],
         "title": "InvitePreview"
+      },
+      "InviteRevokeOut": {
+        "properties": {
+          "revoked": {
+            "type": "integer",
+            "title": "Revoked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "title": "InviteRevokeOut"
       },
       "IssueOut": {
         "properties": {
@@ -3927,6 +4194,19 @@
         ],
         "title": "OptionsOut"
       },
+      "OwnerTransferIn": {
+        "properties": {
+          "member_id": {
+            "type": "string",
+            "title": "Member Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "member_id"
+        ],
+        "title": "OwnerTransferIn"
+      },
       "PasskeyOut": {
         "properties": {
           "id": {
@@ -4175,6 +4455,14 @@
       },
       "PlansOut": {
         "properties": {
+          "passkeys_available": {
+            "type": "boolean",
+            "title": "Passkeys Available"
+          },
+          "payment_destinations_available": {
+            "type": "boolean",
+            "title": "Payment Destinations Available"
+          },
           "ocr_available": {
             "type": "boolean",
             "title": "Ocr Available"
@@ -4209,6 +4497,8 @@
         },
         "type": "object",
         "required": [
+          "passkeys_available",
+          "payment_destinations_available",
           "ocr_available",
           "ads_available",
           "billing_available",

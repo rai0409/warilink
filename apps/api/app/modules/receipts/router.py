@@ -18,6 +18,7 @@ from app.core.db import get_db
 from app.core.errors import ApiError, not_found
 from app.core.security import current_identity, load_group_access, parse_uuid
 from app.models.tables import AuditEvent, Group, Identity, OcrRun, Receipt, ReceiptJob
+from app.modules.groups.lifecycle import require_open
 from app.ocr import images, jobs, quota
 
 # multipart の本文全体と、画像以外のフォーム項目を合わせた余裕
@@ -130,6 +131,7 @@ def upload_receipt(public_id: str, file: UploadFile = File(...),
     require_feature("ocr")
     s = get_settings()
     acc = load_group_access(db, public_id, ident)
+    require_open(acc.group)
     raw = file.file.read(s.receipt_max_bytes + 1)
     images.check_size(len(raw))
     sha = hashlib.sha256(raw).hexdigest()

@@ -130,6 +130,10 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | POST | `/groups/{public_id}/invites` | 招待トークン発行(生値は一度だけ返す) | owner(member は 403) |
 | GET | `/invites/{token}` | 参加前確認(グループ名・未紐付けの名前のみ) | guest+ |
 | POST | `/invites/{token}/join` | 名前を選んで/新規で参加。同じ名前の同時選択は1人だけ成功(409) | guest+ |
+| POST | `/groups/{public_id}/invites/revoke` | 有効な招待をすべて失効(STEP4)。`{revoked}` を返す。参加済みのメンバーはそのまま | owner(member は 403、他は 404) |
+| POST | `/groups/{public_id}/leave` | グループから抜ける(STEP4)。204。メンバー行は名前だけ残し本人との結び付きを外す。以後 404。作成者が抜けると参加の早い参加者へ自動で引き継ぎ、誰もいなければ参加者不在(30 日後に削除) | member |
+| POST | `/groups/{public_id}/owner` | 作成者を参加済みの別のメンバーへ引き継ぐ `{member_id}`(STEP4)。未参加・自分は 422 | owner(他は 403) |
+| POST | `/groups/{public_id}/close` | グループを終了(STEP4)。以後は閲覧のみ、招待は失効、1 年後に削除。`GroupOut.closed=true` | owner(他は 403) |
 | GET | `/groups/{public_id}/expenses` | 一覧 | member |
 | POST | `/groups/{public_id}/expenses/preview` | 保存せず負担額・問題点・反映後の精算案を計算 | member |
 | POST | `/groups/{public_id}/expenses` | 登録(問題があれば422で中止) | member |
@@ -223,11 +227,13 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | DELETE | `/auth/passkeys/{id}` | 失効。最後の 1 件は 409 `LAST_PASSKEY`。他人のものは 404 | 本人 |
 | POST | `/auth/logout` | ログアウト(204)。ゲストは 409 `GUEST_CANNOT_LOGOUT`(戻れなくなるため) | 本人 |
 | POST | `/auth/sessions/revoke-others` | この端末以外のセッションをすべて失効 | 本人 |
+| DELETE | `/account` | 退会(STEP4)。本文 `{confirm: true}` 必須。`{groups_left, destination_erased}` を返し、Cookie を削除。以後 401 | 本人 + CSRF。登録済みで Passkey の機能が有効なら step-up も必須 |
 
 - `GET /identity/me` に `assurance_level`(`guest` / `passkey`)と `passkey_count` を追加(既存項目は不変)。
 - エラー: `PASSKEY_CHALLENGE_INVALID`(400、期限切れ・使用済み・別の人/セッションの challenge)、
   `PASSKEY_VERIFICATION_FAILED`(400、署名・Origin・RP ID・ユーザー検証・署名回数・未登録の Passkey。どれが原因かは返さない)、
   `PASSKEY_ALREADY_REGISTERED`(409)。
+- 終了したグループへの支出・精算・メンバー・招待・参加の変更は `409 GROUP_CLOSED`(STEP4)。`GroupOut` に `closed`(bool)を追加(既存キーは不変)。
 - 回数制限(STEP3): `POST /identity/guest`(新規作成のときだけ)、`POST /groups/{id}/invites`、`GET /invites/{token}`、`POST /invites/{token}/join`、`/auth/passkeys/register/*`、`/auth/passkeys/login/*` は、上限を超えると `429 RATE_LIMITED`。`Retry-After` ヘッダーと本文の `retry_after_seconds` に次に試せるまでの秒数を返す(`docs/SECURITY_PRIVACY.md` §2.3.1)。
 
 

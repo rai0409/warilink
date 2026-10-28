@@ -8,11 +8,13 @@ from app.core.db import get_db
 from app.core.security import check_csrf, create_guest_session, current_session, optional_identity, rate_limit
 from app.models.tables import Identity, PasskeyCredential
 
+from .account import router as account_router
 from .passkeys import router as passkeys_router
 
-# main.py はこの router だけを読み込む。Passkey(/auth/...)もここに含める
+# main.py はこの router だけを読み込む。Passkey(/auth/...)と退会(/account)もここに含める
 router = APIRouter(tags=["identity"])
 router.include_router(passkeys_router)
+router.include_router(account_router)
 
 
 class IdentityOut(BaseModel):
