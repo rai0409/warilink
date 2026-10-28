@@ -14,11 +14,18 @@ SAFE = {
     "cookie_secure": True,
     "allowed_origins": ["https://warilink.example"],
     "database_url": "postgresql+psycopg://app:s3cret-from-env@db.internal:5432/warilink",
+    "rate_limit_secret": "r" * 32,
+    "trusted_proxies": ["10.0.0.0/8"],
 }
 
 
 def make(**over) -> Settings:
     return cfg.ensure_safe(Settings(_env_file=None, **{**SAFE, **over}))
+
+
+def test_production_accepts_tuned_rate_limits_within_bounds():
+    s = make(rate_limit_overrides={"guest_create:ip": (60, 3600)})
+    assert s.rate_limits_active and cfg.production_problems(s) == []
 
 
 def test_safe_production_is_accepted():
@@ -79,6 +86,14 @@ def test_optional_features_are_available_when_enabled(monkeypatch, name):
         ({"feature_bank_provider": True}, "銀行連携"),
         ({"feature_ads": True}, "広告"),
         ({"feature_billing": True}, "課金"),
+        ({"rate_limit_secret": None}, "RATE_LIMIT_SECRET"),
+        ({"rate_limit_secret": "short"}, "RATE_LIMIT_SECRET"),
+        ({"trusted_proxies": []}, "TRUSTED_PROXIES"),
+        ({"trusted_proxies": ["not-an-ip"]}, "TRUSTED_PROXIES"),
+        ({"rate_limits_enabled": False}, "回数制限を無効"),
+        ({"rate_limit_overrides": {"guest_create:ip": (0, 3600)}}, "guest_create:ip"),
+        ({"rate_limit_overrides": {"guest_create:ip": (20, 5)}}, "guest_create:ip"),
+        ({"rate_limit_overrides": {"no_such_limit": (20, 60)}}, "不明な制限名"),
     ],
 )
 def test_unsafe_production_is_rejected(over, needle):

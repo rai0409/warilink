@@ -20,6 +20,8 @@ from app.core.security import (
     new_token,
     now,
     parse_uuid,
+    rate_limit,
+    record_rate_event,
 )
 from app.models.tables import AuditEvent, Group, Identity, Invitation, Membership
 
@@ -160,9 +162,10 @@ def add_members(public_id: str, body: MembersAdd, db: Session = Depends(get_db),
 
 
 @router.post("/groups/{public_id}/invites", response_model=InviteOut, status_code=201)
-def create_invite(public_id: str, body: InviteCreate, db: Session = Depends(get_db),
+def create_invite(public_id: str, body: InviteCreate, request: Request, db: Session = Depends(get_db),
                   ident: Identity = Depends(current_identity)):
     require_feature("groups")
+    rate_limit(request, "invite_create", identity=ident)
     acc = load_group_access(db, public_id, ident)
     if not acc.is_owner:
         raise ApiError(403, "ACCESS_DENIED", "招待URLを発行できるのはグループ作成者だけです")
@@ -194,10 +197,26 @@ def _valid_invite(db: Session, token: str, *, for_update: bool = False, check_us
     return inv
 
 
+def _invite_rate_limit(request: Request, ident: Identity, token: str) -> None:
+    """招待の確認・参加の回数制限。token の有効・無効を調べる前に判定するので、429 から token の存在は分からない。"""
+    rate_limit(request, "invite_access", identity=ident, token=token, check=("invite_miss",))
+
+
+def _count_invite_miss(request: Request, e: ApiError) -> None:
+    if e.code == "INVITE_INVALID":  # 無効・期限切れ・存在しない招待は推測の試行として数える
+        record_rate_event(request, "invite_miss")
+
+
 @router.get("/invites/{token}", response_model=InvitePreview)
-def preview_invite(token: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+def preview_invite(token: str, request: Request, db: Session = Depends(get_db),
+                   ident: Identity = Depends(current_identity)):
     """参加前の確認。グループ名と、まだ誰も紐付けていない名前だけを返す(金額は返さない)。"""
-    inv = _valid_invite(db, token)
+    _invite_rate_limit(request, ident, token)
+    try:
+        inv = _valid_invite(db, token)
+    except ApiError as e:
+        _count_invite_miss(request, e)
+        raise
     group = db.get(Group, inv.group_id)
     assert group is not None
     return InvitePreview(
@@ -209,9 +228,19 @@ def preview_invite(token: str, db: Session = Depends(get_db), ident: Identity = 
 
 
 @router.post("/invites/{token}/join", response_model=GroupOut)
-def join(token: str, body: JoinRequest, db: Session = Depends(get_db),
+def join(token: str, body: JoinRequest, request: Request, db: Session = Depends(get_db),
          ident: Identity = Depends(current_identity)):
     require_feature("groups")
+    _invite_rate_limit(request, ident, token)
+    try:
+        return _join(token, body, db, ident)
+    except ApiError as e:
+        db.rollback()
+        _count_invite_miss(request, e)
+        raise
+
+
+def _join(token: str, body: JoinRequest, db: Session, ident: Identity):
     # 使用回数の判定は「参加済みかどうか」を見た後に行う(参加済みの本人の再アクセスは回数を消費しない)
     inv = _valid_invite(db, token, for_update=True, check_uses=False)
     group = db.execute(select(Group).where(Group.id == inv.group_id).with_for_update()).scalar_one()

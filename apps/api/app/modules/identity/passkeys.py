@@ -40,6 +40,8 @@ from app.core.security import (
     now,
     optional_identity,
     parse_uuid,
+    rate_limit,
+    record_rate_event,
 )
 from app.models.tables import AuditEvent, Identity, Membership, PasskeyCredential, SessionRow, WebauthnChallenge
 
@@ -142,6 +144,7 @@ def _audit(db: Session, ident: Identity, action: str, **meta: Any) -> None:
 def register_options(body: RegisterOptionsIn, request: Request, db: Session = Depends(get_db),
                      ident: Identity = Depends(current_identity)) -> OptionsOut:
     require_feature("passkeys")
+    rate_limit(request, "passkey_register", identity=ident, check=("passkey_fail",))
     s = get_settings()
     sess = current_session(request, db)
     if ident.webauthn_user_handle is None:
@@ -166,6 +169,23 @@ def register_options(body: RegisterOptionsIn, request: Request, db: Session = De
 def register_verify(body: RegisterVerifyIn, request: Request, response: Response, db: Session = Depends(get_db),
                     ident: Identity = Depends(current_identity)) -> SessionStateOut:
     require_feature("passkeys")
+    rate_limit(request, None, identity=ident, check=("passkey_fail",))
+    try:
+        return _register_verify(body, request, response, db, ident)
+    except ApiError as e:
+        _count_failure(request, db, e, ident)
+        raise
+
+
+def _count_failure(request: Request, db: Session, e: ApiError, ident: Identity | None) -> None:
+    """期限切れ・検証失敗(総当たりの対象)を数える。処理本体の変更は巻き戻す。"""
+    if e.status == 400:
+        db.rollback()
+        record_rate_event(request, "passkey_fail", identity=ident)
+
+
+def _register_verify(body: RegisterVerifyIn, request: Request, response: Response, db: Session,
+                     ident: Identity) -> SessionStateOut:
     s = get_settings()
     sess = current_session(request, db)
     ch = _consume_flow(db, body.flow_id, "register")
@@ -209,6 +229,7 @@ def login_options(request: Request, db: Session = Depends(get_db),
                   ident: Identity | None = Depends(optional_identity)) -> OptionsOut:
     require_feature("passkeys")
     check_csrf(request)
+    rate_limit(request, "passkey_login", identity=ident, check=("passkey_fail",))
     s = get_settings()
     opts = webauthn.generate_authentication_options(
         rp_id=s.rp_id, user_verification=UserVerificationRequirement.REQUIRED,
@@ -229,6 +250,16 @@ def login_verify(body: LoginVerifyIn, request: Request, response: Response, db: 
                  caller: Identity | None = Depends(optional_identity)) -> SessionStateOut:
     require_feature("passkeys")
     check_csrf(request)
+    rate_limit(request, None, identity=caller, check=("passkey_fail",))
+    try:
+        return _login_verify(body, request, response, db, caller)
+    except ApiError as e:
+        _count_failure(request, db, e, caller)
+        raise
+
+
+def _login_verify(body: LoginVerifyIn, request: Request, response: Response, db: Session,
+                  caller: Identity | None) -> SessionStateOut:
     s = get_settings()
     sess = current_session(request, db)
     ch = _consume_flow(db, body.flow_id, "authenticate")

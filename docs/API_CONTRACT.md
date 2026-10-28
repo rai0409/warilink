@@ -228,6 +228,7 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 - エラー: `PASSKEY_CHALLENGE_INVALID`(400、期限切れ・使用済み・別の人/セッションの challenge)、
   `PASSKEY_VERIFICATION_FAILED`(400、署名・Origin・RP ID・ユーザー検証・署名回数・未登録の Passkey。どれが原因かは返さない)、
   `PASSKEY_ALREADY_REGISTERED`(409)。
+- 回数制限(STEP3): `POST /identity/guest`(新規作成のときだけ)、`POST /groups/{id}/invites`、`GET /invites/{token}`、`POST /invites/{token}/join`、`/auth/passkeys/register/*`、`/auth/passkeys/login/*` は、上限を超えると `429 RATE_LIMITED`。`Retry-After` ヘッダーと本文の `retry_after_seconds` に次に試せるまでの秒数を返す(`docs/SECURITY_PRIVACY.md` §2.3.1)。
 
 
 ### P08 追加(2026-10-20): 振込先(登録済みの本人のみ)
