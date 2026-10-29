@@ -66,3 +66,13 @@ def test_recipient_can_mark_reported_transfer_as_not_received(user_factory):
     assert a.post(f"/settlements/{t['id']}/confirm-received").json()["status"] == "recipient_confirmed"
     r = a.post(f"/settlements/{t['id']}/not-received")
     assert r.status_code == 409 and r.json()["code"] == "TRANSFER_NOT_REPORTED"
+
+
+def test_revisions_include_the_changers_display_name(user_factory):
+    a, b = user_factory(), user_factory()
+    g, ids = make_group(a, names=("Bさん",))
+    pid = g["public_id"]
+    join_as(b, a, pid, "Bさん")
+    e = a.post(f"/groups/{pid}/expenses", json=equal_expense(ids["Aさん"], 2000, [ids["Aさん"], ids["Bさん"]])).json()
+    revs = b.get(f"/groups/{pid}/expenses/{e['id']}/revisions").json()
+    assert revs[0]["changed_by_name"] == "Aさん" and revs[0]["changed_by_me"] is False

@@ -29,31 +29,24 @@ export function ReceiptUpload({ publicId, available }: { publicId: string; avail
     }
   }
 
-  if (!available) {
-    return (
-      <p>
-        <span className="badge">停止中</span> 現在、画像の読み取りを利用できません。下の欄にレシートの内容を手で入力してください。
-      </p>
-    );
-  }
+  if (!available) return null;
+  const disabled = busy || quota?.remaining === 0;
   return (
-    <div>
-      <p className="muted">
-        読み取った内容は下書きです。必ず確認・訂正してから登録します(自動で確定しません)。
-        {quota && ` 今月の残り: ${quota.remaining}枚(月${quota.free}枚まで)`}
-      </p>
-      <label className="button file-button">
+    <div className="mt-4">
+      <label
+        className={`flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-primary/50 text-[14px] font-medium text-primary focus-within:ring-[3px] focus-within:ring-ring/30 ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+      >
         {busy ? "アップロード中…" : "レシートを撮影・画像を選ぶ"}
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          capture="environment"
-          disabled={busy || quota?.remaining === 0}
-          onChange={(e) => onFile(e.target.files?.[0])}
-        />
+        <input type="file" className="sr-only" accept="image/jpeg,image/png,image/webp" capture="environment"
+          disabled={disabled} onChange={(e) => onFile(e.target.files?.[0])} />
       </label>
-      {quota?.remaining === 0 && <p className="muted">今月の読み取り枠を使い切りました。手入力で登録できます。</p>}
-      {error && <p className="error" role="alert">{error}</p>}
+      <p className="mt-2 text-[12px] text-muted-foreground">
+        読み取った内容は下書きです。必ず確認してから登録します。
+        {quota && ` 今月の残り: ${quota.remaining}枚(月${quota.free}枚まで)`}
+        画像は一定期間後に削除し、撮影位置などの情報(EXIF)は保存しません。
+      </p>
+      {quota?.remaining === 0 && <p className="text-[12px] text-muted-foreground">今月の読み取り枠を使い切りました。手入力で登録できます。</p>}
+      {error && <p className="mt-2 text-[13px] text-destructive" role="alert">{error}</p>}
     </div>
   );
 }

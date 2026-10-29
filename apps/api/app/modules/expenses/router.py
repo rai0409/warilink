@@ -299,8 +299,11 @@ def list_revisions(public_id: str, expense_id: str, db: Session = Depends(get_db
     e = _load_expense(db, acc.group, expense_id)
     revs = db.execute(select(ExpenseRevision).where(ExpenseRevision.expense_id == e.id)
                       .order_by(ExpenseRevision.version)).scalars()
+    names = dict(db.execute(select(Membership.identity_id, Membership.display_name).where(
+        Membership.group_id == acc.group.id, Membership.identity_id.is_not(None))).all())
     return [RevisionOut(version=r.version, change_kind=r.change_kind, spec=r.spec, result=r.result,
-                        changed_by_me=r.changed_by == ident.id, created_at=r.created_at.isoformat()) for r in revs]
+                        changed_by_me=r.changed_by == ident.id, created_at=r.created_at.isoformat(),
+                        changed_by_name=names.get(r.changed_by)) for r in revs]
 
 
 @router.put("/{expense_id}", response_model=ExpenseDetailOut)

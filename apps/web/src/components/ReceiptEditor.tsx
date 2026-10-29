@@ -1,10 +1,28 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { ChevronRight, CupSoda, Minus, Plus, TriangleAlert, Utensils } from "lucide-react";
+import {
+  Amount,
+  Body,
+  BottomBar,
+  CheckRow,
+  ErrorText,
+  List,
+  Muted,
+  OutlineButton,
+  Panel,
+  PrimaryButton,
+  Row,
+  Screen,
+  Segmented,
+  TextButton,
+  TextField,
+  TopBar,
+} from "@/components/kit";
 import { ApiProblem, api, errorMessage, type ExpenseBody, type ExpenseDetail, type Issue, type Member } from "@/lib/api";
-import { ADJUSTMENT_KIND_LABEL, ADJUSTMENT_SIGN, formatYen, parseYen } from "@/lib/format";
+import { ADJUSTMENT_KIND_LABEL, ADJUSTMENT_SIGN, parseYen, yen } from "@/lib/format";
 import { useExpensePreview } from "@/lib/use-preview";
-import { IssueList, PreviewShares } from "@/components/PreviewShares";
 
 type AllocMode = "equal" | "units" | "exact";
 type TaxGroup = "" | "8" | "10";
@@ -47,12 +65,13 @@ const REASON_LABEL: Record<string, string> = {
   REFUND: "返品・取消の行",
 };
 
-const ALLOC_LABEL: Record<AllocMode, string> = { equal: "均等", units: "数量で分ける", exact: "金額指定" };
 const RULE_LABEL: Record<RuleType, string> = {
-  proportional: "負担額に比例",
-  equal: "対象商品の負担者で均等",
+  proportional: "商品金額に比例",
+  equal: "均等",
   members: "指定した人で均等",
 };
+/** いつも出す調整の欄(0 円なら送らない) */
+const STANDARD_KINDS: AdjKind[] = ["tax", "discount", "service_charge"];
 
 const newId = (p: string) => `${p}-${crypto.randomUUID().slice(0, 8)}`;
 const emptyItem = (): ItemDraft => ({
@@ -114,6 +133,11 @@ type Props = {
   sourceReceiptId?: string;
   onFocusLine?: (id: string | null) => void;
   onSaved: (expenseId: string) => void;
+  backHref: string;
+  /** 読み取り結果の確認画面などで、商品の一覧より上に出すもの(画像など) */
+  header?: React.ReactNode;
+  /** 編集中に別の画面で更新されたとき、最新の内容を読み直す */
+  onReloadLatest?: () => void;
 };
 
 /**
@@ -121,7 +145,8 @@ type Props = {
  * 金額の計算・検算はすべてサーバー(プレビュー API)が行い、ここでは入力と表示だけを扱う。
  */
 export function ReceiptEditor({
-  publicId, members, myMemberId, editing, initialDraft, review, sourceReceiptId, onFocusLine, onSaved,
+  publicId, members, myMemberId, editing, initialDraft, review, sourceReceiptId, onFocusLine, onSaved, backHref, header,
+  onReloadLatest,
 }: Props) {
   const init = useMemo(
     () => (editing ? fromSpec(editing.spec as unknown as ReceiptSpec) : initialDraft ?? null),
@@ -132,9 +157,20 @@ export function ReceiptEditor({
   const [totalText, setTotalText] = useState(init?.total ?? "");
   const [payer, setPayer] = useState(init?.payer ?? myMemberId);
   const [items, setItems] = useState<ItemDraft[]>(init?.items ?? [emptyItem()]);
-  const [adjs, setAdjs] = useState<AdjDraft[]>(init?.adjustments ?? []);
+  const [adjs, setAdjs] = useState<AdjDraft[]>(() => {
+    const given = init?.adjustments ?? [];
+    const missing = STANDARD_KINDS.filter((k) => !given.some((a) => a.kind === k)).map(
+      (k): AdjDraft => ({ id: newId("a"), kind: k, label: "", amount: "0", rule: k === "service_charge" ? "equal" : "proportional", scope: "all", members: [] }),
+    );
+    return [...given, ...missing];
+  });
+  const [panel, setPanel] = useState<"assign" | "item" | "adjust" | "summary" | null>(null);
+  const [editItemId, setEditItemId] = useState<string | null>(null);
+  const [assignMode, setAssignMode] = useState<AllocMode>("equal");
+  const [assignMembers, setAssignMembers] = useState<Set<string>>(new Set());
+  const [assignValues, setAssignValues] = useState<Record<string, string>>({});
+  const [conflict, setConflict] = useState(false);
   const [bulk, setBulk] = useState<Set<string>>(new Set());
-  const [bulkMembers, setBulkMembers] = useState<Set<string>>(new Set());
   const [expenseId, setExpenseId] = useState(() => editing?.id ?? crypto.randomUUID());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -174,7 +210,7 @@ export function ReceiptEditor({
         allocation: shares.length ? { mode: it.mode, shares } : null,
       };
     });
-    const adjustments = adjs.map((a) => {
+    const adjustments = adjs.filter((a) => parseYen(a.amount) !== 0).map((a) => {
       const v = parseYen(a.amount)!;
       const rule =
         a.rule === "members"
@@ -216,14 +252,26 @@ export function ReceiptEditor({
   function toggle(list: string[], id: string): string[] {
     return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
   }
-  function copyPrevious(index: number) {
-    const prev = items[index - 1];
-    patchItem(items[index].id, { mode: prev.mode, members: [...prev.members], values: { ...prev.values } });
+  function openAssign() {
+    const first = items.find((x) => bulk.has(x.id));
+    setAssignMode(bulk.size === 1 && first ? first.mode : "equal");
+    setAssignMembers(new Set(first?.mode === "equal" ? first.members : allIds));
+    setAssignValues(bulk.size === 1 && first ? { ...first.values } : {});
+    setPanel("assign");
   }
-  function applyBulk() {
-    const ids = allIds.filter((id) => bulkMembers.has(id));
-    setItems((xs) => xs.map((x) => (bulk.has(x.id) ? { ...x, mode: "equal", members: ids, values: {} } : x)));
+  function applyAssign() {
+    const ids = allIds.filter((id) => assignMembers.has(id));
+    setItems((xs) =>
+      xs.map((x) =>
+        !bulk.has(x.id)
+          ? x
+          : assignMode === "equal"
+            ? { ...x, mode: "equal", members: ids, values: {} }
+            : { ...x, mode: assignMode, members: [], values: { ...assignValues } },
+      ),
+    );
     setBulk(new Set());
+    setPanel(null);
   }
   function addDifferenceLine(diff: number) {
     // ユーザーが明示的に押したときだけ差額調整行を追加する(自動補正はしない)
@@ -258,314 +306,303 @@ export function ReceiptEditor({
         onSaved(saved);
       }
     } catch (e) {
-      setSaveError(
-        e instanceof ApiProblem && e.code === "REVISION_CONFLICT"
-          ? `${e.message}(画面を再読み込みすると最新の内容が表示されます)`
-          : errorMessage(e),
-      );
+      if (e instanceof ApiProblem && e.code === "REVISION_CONFLICT") setConflict(true);
+      else setSaveError(errorMessage(e));
     } finally {
       setBusy(false);
     }
   }
 
-  return (
-    <section className="card" aria-labelledby="receipt-h">
-      <h2 id="receipt-h">{editing ? "商品別の支出を編集" : "レシートの内容を入力"}</h2>
-      <label htmlFor="r-title">店名・内容</label>
-      <input id="r-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} />
-      <label htmlFor="r-total">レシートの合計金額(円)</label>
-      <input id="r-total" inputMode="numeric" value={totalText} onChange={(e) => setTotalText(e.target.value)} />
-      {totalText && total === null && <p className="error">合計金額は整数の円で入力してください</p>}
-      <label htmlFor="r-payer">支払った人</label>
-      <select id="r-payer" value={payer} onChange={(e) => setPayer(e.target.value)}>
-        {members.map((m) => (
-          <option key={m.id} value={m.id}>{m.display_name}</option>
-        ))}
-      </select>
+  const itemsSum = items.reduce((s, it) => s + (parseYen(it.line) ?? 0), 0);
+  const signed = (a: AdjDraft) => {
+    const v = parseYen(a.amount) ?? 0;
+    return ADJUSTMENT_SIGN[a.kind] === "negative" ? -v : v;
+  };
+  const adjSum = adjs.reduce((s, a) => s + signed(a), 0);
+  const inputSum = itemsSum + adjSum;
+  const diff = total !== null ? total - inputSum : null;
+  const name = (id: string) => members.find((m) => m.id === id)?.display_name ?? "";
+  const selected = items.filter((x) => bulk.has(x.id));
+  const editItem = items.find((x) => x.id === editItemId) ?? null;
+  const kindLabel = (a: AdjDraft) => a.label || ADJUSTMENT_KIND_LABEL[a.kind] || a.kind;
 
-      <h3>商品</h3>
-      {items.map((it, index) => {
-        const issues = issuesFor(it.id);
-        const unallocated = issues.some((i) => i.code === "ITEM_UNALLOCATED");
-        const alloc = allocOf("item", it.id);
-        const unitSum = it.mode === "units"
-          ? Object.values(it.values).reduce((s, v) => s + (Number(v) || 0), 0)
-          : 0;
-        return (
-          <fieldset
-            key={it.id}
-            className={`item${issues.length || localErrors[it.id] ? " has-issue" : ""}${review?.[it.id] ? " needs-review" : ""}`}
-            aria-label={`商品${index + 1}`}
-            onFocus={() => onFocusLine?.(it.id)}
-          >
-            <legend>
-              商品{index + 1}
-              {unallocated && <span className="badge warn">未割当</span>}
-              {review?.[it.id] && <span className="badge review">要確認</span>}
-            </legend>
-            <ReviewNote mark={review?.[it.id]} />
-            <div className="item-grid">
-              <div>
-                <label htmlFor={`${it.id}-name`}>商品名</label>
-                <input id={`${it.id}-name`} value={it.name} maxLength={100}
-                  onChange={(e) => patchItem(it.id, { name: e.target.value })} />
-              </div>
-              <div>
-                <label htmlFor={`${it.id}-qty`}>数量</label>
-                <input id={`${it.id}-qty`} inputMode="numeric" value={it.qty}
-                  onChange={(e) => patchItem(it.id, { qty: e.target.value })} />
-              </div>
-              <div>
-                <label htmlFor={`${it.id}-line`}>金額(円)</label>
-                <input id={`${it.id}-line`} inputMode="numeric" value={it.line}
-                  onChange={(e) => patchItem(it.id, { line: e.target.value })} />
-              </div>
-              <div>
-                <label htmlFor={`${it.id}-tax`}>税率</label>
-                <select id={`${it.id}-tax`} value={it.tax}
-                  onChange={(e) => patchItem(it.id, { tax: e.target.value as TaxGroup })}>
-                  <option value="">指定なし</option>
-                  <option value="8">8%(軽減)</option>
-                  <option value="10">10%</option>
-                </select>
-              </div>
-            </div>
+  function itemSub(it: ItemDraft): string {
+    const qty = `${it.qty || 1}点`;
+    if (it.mode === "units") return `${qty} · 数量で配分`;
+    if (it.mode === "exact") return `${qty} · 金額指定`;
+    return it.members.length ? `${qty} · ${it.members.map(name).join("、")}` : `${qty} · 未割当`;
+  }
 
-            <div className="row">
-              <label className="check">
-                <input type="checkbox" checked={bulk.has(it.id)}
-                  onChange={() => setBulk((s) => { const n = new Set(s); if (n.has(it.id)) n.delete(it.id); else n.add(it.id); return n; })} />
-                一括割当の対象
-              </label>
-              <select aria-label="分け方" value={it.mode}
-                onChange={(e) => patchItem(it.id, { mode: e.target.value as AllocMode, values: {} })}>
-                {(Object.keys(ALLOC_LABEL) as AllocMode[]).map((m) => (
-                  <option key={m} value={m}>{ALLOC_LABEL[m]}</option>
-                ))}
-              </select>
-            </div>
-
-            {it.mode === "equal" && (
-              <div className="row" role="group" aria-label="負担する人">
-                <button type="button" className="toggle" onClick={() => patchItem(it.id, { members: allIds })}>全員</button>
-                {members.map((m) => (
-                  <button key={m.id} type="button" className="toggle" aria-pressed={it.members.includes(m.id)}
-                    onClick={() => patchItem(it.id, { members: toggle(it.members, m.id) })}>
-                    {m.display_name}
-                  </button>
-                ))}
-              </div>
-            )}
-            {it.mode === "units" && (
-              <div role="group" aria-label="数量の割当">
-                {members.map((m) => {
-                  const n = Number(it.values[m.id] ?? 0) || 0;
-                  const set = (v: number) => patchItem(it.id, { values: { ...it.values, [m.id]: String(Math.max(0, v)) } });
-                  return (
-                    <div key={m.id} className="stepper">
-                      <span>{m.display_name}</span>
-                      <button type="button" className="secondary" aria-label={`${m.display_name}の数量を減らす`}
-                        disabled={n === 0} onClick={() => set(n - 1)}>−</button>
-                      <output aria-label={`${m.display_name}の数量`}>{n}</output>
-                      <button type="button" className="secondary" aria-label={`${m.display_name}の数量を増やす`}
-                        onClick={() => set(n + 1)}>+</button>
-                    </div>
-                  );
-                })}
-                <p className="muted">割当 {unitSum} / {it.qty}</p>
-              </div>
-            )}
-            {it.mode === "exact" && (
-              <div role="group" aria-label="金額の指定">
-                {members.map((m) => (
-                  <div key={m.id} className="inline-field">
-                    <label htmlFor={`${it.id}-x-${m.id}`}>{m.display_name}の金額(円)</label>
-                    <input id={`${it.id}-x-${m.id}`} inputMode="numeric" value={it.values[m.id] ?? ""}
-                      onChange={(e) => patchItem(it.id, { values: { ...it.values, [m.id]: e.target.value } })} />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {alloc && (
-              <p className="muted" aria-label="この商品の負担">
-                {members.filter((m) => alloc[m.id]).map((m) => `${m.display_name} ${formatYen(alloc[m.id])}`).join(" · ")}
-              </p>
-            )}
-            {localErrors[it.id] && <p className="error">{localErrors[it.id]}</p>}
-            {issues.filter((i) => i.code !== "ITEM_UNALLOCATED").map((i, n) => (
-              <p key={n} className="error">{i.message}</p>
-            ))}
-            <p className="row">
-              {index > 0 && (
-                <button type="button" className="secondary" onClick={() => copyPrevious(index)}>前の商品と同じ</button>
-              )}
-              <button type="button" className="secondary" disabled={items.length === 1}
-                onClick={() => setItems((xs) => xs.filter((x) => x.id !== it.id))}>
-                この商品を削除
-              </button>
-            </p>
-          </fieldset>
-        );
-      })}
-      <p className="row">
-        <button type="button" className="secondary" onClick={() => setItems((xs) => [...xs, emptyItem()])}>商品を追加</button>
-      </p>
-
-      {bulk.size > 0 && (
-        <div className="bulk" role="region" aria-label="一括割当">
-          <p>選択した{bulk.size}件の商品に、次の人を均等に割り当てます</p>
-          <div className="row" role="group" aria-label="一括で負担する人">
-            {members.map((m) => (
-              <button key={m.id} type="button" className="toggle" aria-pressed={bulkMembers.has(m.id)}
-                onClick={() => setBulkMembers((s) => { const n = new Set(s); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n; })}>
-                {m.display_name}
-              </button>
-            ))}
-          </div>
-          <p className="row">
-            <button type="button" disabled={bulkMembers.size === 0} onClick={applyBulk}>選択した商品に割り当てる</button>
-            <button type="button" className="secondary" onClick={() => setBulk(new Set())}>選択を解除</button>
+  const reconciliation = (
+    <div className="mt-6 border-t border-border">
+      {[["商品合計", itemsSum], ["入力合計", inputSum], ["レシート合計", total ?? 0]].map(([l, v]) => (
+        <p key={l as string} className="flex justify-between border-b border-border py-3 text-[14px]">
+          <span className="text-muted-foreground">{l}</span>
+          <span className="amount tabular-nums">{yen(v as number)}</span>
+        </p>
+      ))}
+      {diff !== null && diff !== 0 && (
+        <div role="region" aria-label="合計金額の不一致" className="border-b border-border py-3">
+          <p className="flex items-center gap-2 text-[14px] font-semibold text-warning">
+            <TriangleAlert className="size-5" aria-hidden />
+            差額 {yen(diff)}
           </p>
+          <Muted className="mt-1">金額は自動では直しません。明細を直すか、差額を調整として追加してください。</Muted>
+          <TextButton onClick={() => addDifferenceLine(diff)}>差額 {yen(diff)} を調整行として追加</TextButton>
         </div>
       )}
+    </div>
+  );
 
-      <h3>税・割引・サービス料</h3>
-      <p className="muted">
-        内税のレシートでは税をここに入れないでください(商品の金額に含まれているため二重計上になります)。
-      </p>
-      {adjs.map((a, index) => {
-        const issues = issuesFor(a.id);
-        const alloc = allocOf("adj", a.id);
-        const sign = ADJUSTMENT_SIGN[a.kind];
-        return (
-          <fieldset key={a.id}
-            className={`item${issues.length || localErrors[a.id] ? " has-issue" : ""}${review?.[a.id] ? " needs-review" : ""}`}
-            aria-label={`調整${index + 1}`} onFocus={() => onFocusLine?.(a.id)}>
-            <legend>
-              調整{index + 1}
-              {review?.[a.id] && <span className="badge review">要確認</span>}
-            </legend>
-            <ReviewNote mark={review?.[a.id]} />
-            <div className="item-grid">
-              <div>
-                <label htmlFor={`${a.id}-kind`}>種類</label>
-                <select id={`${a.id}-kind`} value={a.kind} onChange={(e) => patchAdj(a.id, { kind: e.target.value as AdjKind })}>
-                  {Object.entries(ADJUSTMENT_KIND_LABEL).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
+  return (
+    <Screen>
+      <TopBar title="商品別" subtitle={title || undefined} back={backHref} />
+      <Body>
+        {header}
+        <TextField label="店名・内容" value={title} onChange={setTitle} onClear={() => setTitle("")} maxLength={100}
+          placeholder="金曜のごはん" />
+        <TextField label="レシートの合計金額(円)" value={totalText} onChange={setTotalText} inputMode="numeric" placeholder="0"
+          inputClassName="amount text-[20px] font-semibold tabular-nums" aria-invalid={totalText !== "" && total === null} />
+        {totalText && total === null && <ErrorText className="my-2">合計金額は整数の円で入力してください</ErrorText>}
+
+        <ul aria-label="商品" className="mt-6 border-t border-border">
+          {items.map((it, index) => {
+            const issues = issuesFor(it.id);
+            const flagged = Boolean(localErrors[it.id]) || issues.length > 0;
+            const label = it.name || `商品${index + 1}`;
+            return (
+              <li key={it.id} className="flex min-h-16 items-center gap-3 border-b border-border" onFocus={() => onFocusLine?.(it.id)}>
+                <input type="checkbox" aria-label={`${label}を選択`} checked={bulk.has(it.id)}
+                  onChange={() => setBulk((s) => { const n = new Set(s); if (n.has(it.id)) n.delete(it.id); else n.add(it.id); return n; })}
+                  className="size-5 accent-[var(--primary)]" />
+                {/(ドリンク|ビール|茶|酒|ジュース|コーヒー|ハイボール)/.test(it.name)
+                  ? <CupSoda aria-hidden className="size-5 shrink-0" strokeWidth={1.6} />
+                  : <Utensils aria-hidden className="size-5 shrink-0" strokeWidth={1.6} />}
+                <button type="button" aria-label={`${label}を編集`} onClick={() => { setEditItemId(it.id); setPanel("item"); }}
+                  className="flex min-h-16 min-w-0 flex-1 items-center gap-2 text-left">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[14px] font-medium">{label}</span>
+                    <span className={`block truncate text-[12px] ${flagged || review?.[it.id] ? "text-warning" : "text-muted-foreground"}`}>
+                      {review?.[it.id] ? "要確認 · " : ""}{itemSub(it)}
+                    </span>
+                  </span>
+                  <span className="amount text-[16px] font-semibold tabular-nums">{parseYen(it.line) !== null ? yen(parseYen(it.line)!) : "—"}</span>
+                  <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <TextButton onClick={() => { const it = emptyItem(); setItems((xs) => [...xs, it]); setEditItemId(it.id); setPanel("item"); }}>
+          <Plus className="size-5" aria-hidden />
+          商品を追加
+        </TextButton>
+        {selected.length > 0 && (
+          <OutlineButton className="mt-3" onClick={openAssign}>選択した{selected.length}商品を割り当て</OutlineButton>
+        )}
+        <List className="mt-6">
+          <Row label="税・割引・サービス料" value={yen(adjSum)} onClick={() => setPanel("adjust")} />
+        </List>
+        {bd && <GlobalIssues issues={bd.issues.filter((i) => !i.target && i.code !== "RECEIPT_TOTAL_MISMATCH")} />}
+        {previewError && <ErrorText>{previewError}</ErrorText>}
+      </Body>
+      <BottomBar>
+        <PrimaryButton onClick={() => setPanel("summary")}>内訳を確認</PrimaryButton>
+      </BottomBar>
+
+      {/* ---------------------------------------------------------------- 割り当て */}
+      <Panel open={panel === "assign"} title="割り当て" onBack={() => setPanel(null)}
+        subtitle={`${selected.map((x) => x.name || "商品").join("・")} ${yen(selected.reduce((s, x) => s + (parseYen(x.line) ?? 0), 0))}`}
+        footer={<PrimaryButton disabled={assignMode === "equal" && assignMembers.size === 0} onClick={applyAssign}>{selected.length}商品に適用</PrimaryButton>}>
+        <div className="mt-4">
+          <Segmented label="割り当て方" value={assignMode} onChange={setAssignMode}
+            options={selected.length === 1
+              ? [{ value: "equal", label: "均等" }, { value: "units", label: "数量" }, { value: "exact", label: "金額指定" }]
+              : [{ value: "equal", label: "均等" }]} />
+          {selected.length > 1 && <Muted className="mt-2">数量・金額指定は 1 商品ずつ選んでください。</Muted>}
+        </div>
+        {assignMode === "equal" && (
+          <ul aria-label="負担する人" className="mt-4">
+            {members.map((m) => (
+              <CheckRow key={m.id} label={m.display_name} checked={assignMembers.has(m.id)}
+                onChange={(v) => setAssignMembers((s) => { const n = new Set(s); if (v) n.add(m.id); else n.delete(m.id); return n; })} />
+            ))}
+          </ul>
+        )}
+        {assignMode === "units" && selected[0] && (
+          <ul aria-label="数量の割当" className="mt-4">
+            {members.map((m) => {
+              const n = Number(assignValues[m.id] ?? 0) || 0;
+              const set = (v: number) => setAssignValues({ ...assignValues, [m.id]: String(Math.max(0, v)) });
+              return (
+                <li key={m.id} className="flex min-h-14 items-center gap-3 border-b border-border">
+                  <span className="flex-1 text-[14px]">{m.display_name}</span>
+                  <button type="button" aria-label={`${m.display_name}の数量を減らす`} disabled={n === 0} onClick={() => set(n - 1)}
+                    className="grid size-10 place-items-center rounded-full border border-input disabled:opacity-40"><Minus className="size-4" aria-hidden /></button>
+                  <output aria-label={`${m.display_name}の数量`} className="w-8 text-center tabular-nums">{n}</output>
+                  <button type="button" aria-label={`${m.display_name}の数量を増やす`} onClick={() => set(n + 1)}
+                    className="grid size-10 place-items-center rounded-full border border-input"><Plus className="size-4" aria-hidden /></button>
+                </li>
+              );
+            })}
+            <Muted className="mt-2">割当 {Object.values(assignValues).reduce((s, v) => s + (Number(v) || 0), 0)} / {selected[0].qty}</Muted>
+          </ul>
+        )}
+        {assignMode === "exact" && (
+          <ul aria-label="金額の指定" className="mt-4">
+            {members.map((m) => (
+              <li key={m.id} className="flex min-h-14 items-center gap-3 border-b border-border">
+                <span className="flex-1 text-[14px]">{m.display_name}</span>
+                <input aria-label={`${m.display_name}の金額(円)`} inputMode="numeric" value={assignValues[m.id] ?? ""}
+                  onChange={(e) => setAssignValues({ ...assignValues, [m.id]: e.target.value })}
+                  className="h-11 w-32 rounded-md border border-input px-3 text-right tabular-nums" />
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      {/* ---------------------------------------------------------------- 商品の編集 */}
+      <Panel open={panel === "item" && editItem !== null} title="商品" onBack={() => setPanel(null)}
+        footer={<PrimaryButton onClick={() => setPanel(null)}>完了</PrimaryButton>}>
+        {editItem && (
+          <div role="group" aria-label="商品の内容">
+            <ReviewNote mark={review?.[editItem.id]} />
+            <TextField label="商品名" value={editItem.name} maxLength={100} onChange={(v) => patchItem(editItem.id, { name: v })} />
+            <div className="grid grid-cols-2 gap-3">
+              <TextField label="数量" value={editItem.qty} inputMode="numeric" onChange={(v) => patchItem(editItem.id, { qty: v })} />
+              <TextField label="金額(円)" value={editItem.line} inputMode="numeric" onChange={(v) => patchItem(editItem.id, { line: v })} />
+            </div>
+            <label className="mt-6 block text-[13px] text-muted-foreground">
+              税率
+              <select value={editItem.tax} onChange={(e) => patchItem(editItem.id, { tax: e.target.value as TaxGroup })}
+                className="mt-2 h-12 w-full rounded-md border border-input bg-background px-3 text-[15px] text-foreground">
+                <option value="">指定なし</option>
+                <option value="8">8%(軽減)</option>
+                <option value="10">10%</option>
+              </select>
+            </label>
+            {localErrors[editItem.id] && <ErrorText>{localErrors[editItem.id]}</ErrorText>}
+            {issuesFor(editItem.id).filter((i) => i.code !== "ITEM_UNALLOCATED").map((i, n) => <ErrorText key={n}>{i.message}</ErrorText>)}
+            <TextButton tone="danger" className="mt-6" disabled={items.length === 1}
+              onClick={() => { setItems((xs) => xs.filter((x) => x.id !== editItem.id)); setBulk((s) => { const n = new Set(s); n.delete(editItem.id); return n; }); setPanel(null); }}>
+              この商品を削除
+            </TextButton>
+          </div>
+        )}
+      </Panel>
+
+      {/* ---------------------------------------------------------------- 税・割引・サービス料 */}
+      <Panel open={panel === "adjust"} title="税・割引・サービス料" onBack={() => setPanel(null)}
+        footer={<PrimaryButton onClick={() => setPanel(null)}>適用する</PrimaryButton>}>
+        <Muted className="mt-2">内税のレシートでは税を入れないでください(商品の金額に含まれているため二重計上になります)。</Muted>
+        {adjs.map((a) => {
+          const label = kindLabel(a);
+          const sign = ADJUSTMENT_SIGN[a.kind];
+          return (
+            <div key={a.id} role="group" aria-label={label} className="border-b border-border py-4">
+              <ReviewNote mark={review?.[a.id]} />
+              <div className="flex items-center gap-3">
+                <span className="flex-1 text-[15px] font-semibold">{label}</span>
+                <input aria-label={`${label}の金額(円)${sign === "negative" ? "(差し引く額)" : ""}`} inputMode="numeric" value={a.amount}
+                  onChange={(e) => patchAdj(a.id, { amount: e.target.value })}
+                  className="h-11 w-36 rounded-md border border-input px-3 text-right text-[15px] tabular-nums" />
+              </div>
+              <label className="mt-3 flex items-center gap-3 text-[13px] text-muted-foreground">
+                <span className="flex-1">配分方法</span>
+                <select aria-label={`${label}の配分方法`} value={a.rule} onChange={(e) => patchAdj(a.id, { rule: e.target.value as RuleType })}
+                  className="h-11 w-44 rounded-md border border-input bg-background px-3 text-[14px] text-foreground">
+                  {(Object.keys(RULE_LABEL) as RuleType[]).map((r) => <option key={r} value={r}>{RULE_LABEL[r]}</option>)}
                 </select>
-              </div>
-              <div>
-                <label htmlFor={`${a.id}-amount`}>
-                  {sign === "negative" ? "差し引く金額(円)" : sign === "positive" ? "金額(円)" : "金額(円・マイナス可)"}
-                </label>
-                <input id={`${a.id}-amount`} inputMode="numeric" value={a.amount}
-                  onChange={(e) => patchAdj(a.id, { amount: e.target.value })} />
-              </div>
-              <div>
-                <label htmlFor={`${a.id}-rule`}>分け方</label>
-                <select id={`${a.id}-rule`} value={a.rule} onChange={(e) => patchAdj(a.id, { rule: e.target.value as RuleType })}>
-                  {(Object.keys(RULE_LABEL) as RuleType[]).map((r) => (
-                    <option key={r} value={r}>{RULE_LABEL[r]}</option>
-                  ))}
-                </select>
-              </div>
-              {a.rule !== "members" && (
-                <div>
-                  <label htmlFor={`${a.id}-scope`}>対象の商品</label>
-                  <select id={`${a.id}-scope`} value={a.scope}
-                    onChange={(e) => patchAdj(a.id, { scope: e.target.value as AdjDraft["scope"] })}>
+              </label>
+              {a.rule !== "members" && (a.kind === "tax" || a.scope !== "all") && (
+                <label className="mt-2 flex items-center gap-3 text-[13px] text-muted-foreground">
+                  <span className="flex-1">対象の商品</span>
+                  <select aria-label={`${label}の対象`} value={a.scope} onChange={(e) => patchAdj(a.id, { scope: e.target.value as AdjDraft["scope"] })}
+                    className="h-11 w-44 rounded-md border border-input bg-background px-3 text-[14px] text-foreground">
                     <option value="all">すべての商品</option>
                     <option value="8">税率8%の商品</option>
                     <option value="10">税率10%の商品</option>
-                    {a.scopeItemIds?.length ? (
-                      <option value="items">
-                        {items.filter((x) => a.scopeItemIds!.includes(x.id)).map((x) => x.name || "商品").join("・")}のみ
-                      </option>
-                    ) : null}
+                    {a.scopeItemIds?.length ? <option value="items">{items.filter((x) => a.scopeItemIds!.includes(x.id)).map((x) => x.name || "商品").join("・")}のみ</option> : null}
                   </select>
-                </div>
+                </label>
+              )}
+              {a.rule === "members" && (
+                <ul aria-label={`${label}を負担する人`} className="mt-2">
+                  {members.map((m) => (
+                    <CheckRow key={m.id} label={m.display_name} checked={a.members.includes(m.id)}
+                      onChange={() => patchAdj(a.id, { members: toggle(a.members, m.id) })} />
+                  ))}
+                </ul>
+              )}
+              {localErrors[a.id] && <ErrorText>{localErrors[a.id]}</ErrorText>}
+              {issuesFor(a.id).map((i, n) => <ErrorText key={n}>{i.message}</ErrorText>)}
+              {!STANDARD_KINDS.includes(a.kind) && (
+                <TextButton tone="danger" onClick={() => setAdjs((xs) => xs.filter((x) => x.id !== a.id))}>この調整を削除</TextButton>
               )}
             </div>
-            {a.rule === "members" && (
-              <div className="row" role="group" aria-label="負担する人">
-                {members.map((m) => (
-                  <button key={m.id} type="button" className="toggle" aria-pressed={a.members.includes(m.id)}
-                    onClick={() => patchAdj(a.id, { members: toggle(a.members, m.id) })}>
-                    {m.display_name}
-                  </button>
-                ))}
-              </div>
-            )}
-            {alloc && (
-              <p className="muted" aria-label="この調整の負担">
-                {members.filter((m) => alloc[m.id]).map((m) => `${m.display_name} ${formatYen(alloc[m.id])}`).join(" · ")}
-              </p>
-            )}
-            {localErrors[a.id] && <p className="error">{localErrors[a.id]}</p>}
-            {issues.map((i, n) => (
-              <p key={n} className="error">{i.message}</p>
-            ))}
-            <p className="row">
-              <button type="button" className="secondary" onClick={() => setAdjs((xs) => xs.filter((x) => x.id !== a.id))}>
-                この調整を削除
-              </button>
-            </p>
-          </fieldset>
-        );
-      })}
-      <p className="row">
-        <button type="button" className="secondary"
-          onClick={() => setAdjs((xs) => [...xs, { id: newId("a"), kind: "tax", label: "", amount: "", rule: "proportional", scope: "all", members: [] }])}>
-          税・割引などを追加
-        </button>
-      </p>
+          );
+        })}
+        {reconciliation}
+      </Panel>
 
-      <div aria-live="polite" className="preview">
-        {mismatch && (
-          <div className="notice warn" role="region" aria-label="合計金額の不一致">
-            <p>
-              明細と調整額の合計 {formatYen(mismatch.breakdown_total)} が、レシートの合計{" "}
-              {formatYen(mismatch.receipt_total)} と一致しません(差額{" "}
-              <strong>{formatYen(mismatch.difference)}</strong>)。
-            </p>
-            <p>金額を自動では補正しません。明細を訂正するか、差額を調整行として明示的に追加してください。</p>
-            <button type="button" className="secondary" onClick={() => addDifferenceLine(mismatch.difference)}>
-              差額 {formatYen(mismatch.difference)} を調整行として追加
-            </button>
+      {/* ---------------------------------------------------------------- 内訳の確認と登録 */}
+      <Panel open={panel === "summary"} title="内訳を確認" onBack={() => setPanel(null)}
+        footer={conflict ? (
+          <div role="alert" className="text-center">
+            <p className="text-[14px] font-semibold">編集中に更新がありました</p>
+            <p className="mt-1 text-[12px] text-muted-foreground">最新の内容を確認してください。</p>
+            <PrimaryButton className="mt-4" onClick={() => onReloadLatest?.()}>最新の内容を確認</PrimaryButton>
+            <TextButton className="w-full justify-center" onClick={() => setConflict(false)}>編集中の内容</TextButton>
           </div>
-        )}
-        {bd && <IssueList issues={bd.issues.filter((i) => i.code !== "RECEIPT_TOTAL_MISMATCH")} onlyGlobal />}
+        ) : (
+          <PrimaryButton disabled={!bd?.ok || pending || busy || !body} onClick={save}>
+            {editing ? "変更を保存" : "登録する"}
+          </PrimaryButton>
+        )}>
+        <Amount label="レシート合計" value={total !== null ? yen(total) : "—"} />
+        <label className="mt-6 flex items-center gap-3 text-[13px] text-muted-foreground">
+          <span className="flex-1">支払った人</span>
+          <select value={payer} onChange={(e) => setPayer(e.target.value)} aria-label="支払った人"
+            className="h-11 w-44 rounded-md border border-input bg-background px-3 text-[14px] text-foreground">
+            {members.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+          </select>
+        </label>
+        {reconciliation}
         {bd?.ok && (
           <>
-            <p className="ok">明細の合計がレシートの合計 {formatYen(bd.receipt_total_minor ?? 0)} と一致しました。</p>
-            <PreviewShares members={members} shares={bd.shares} label="メンバー別の負担" />
+            <p className="mt-6 text-[14px] font-semibold text-success">明細の合計がレシートの合計と一致しました。</p>
+            <ul aria-label="メンバー別の負担" className="mt-2 text-[14px]">
+              {members.filter((m) => bd.shares[m.id] !== undefined).map((m) => (
+                <li key={m.id} className="flex justify-between border-b border-border py-3">
+                  <span>{m.display_name}</span>
+                  <span className="amount font-semibold tabular-nums">{yen(bd.shares[m.id])}</span>
+                </li>
+              ))}
+            </ul>
           </>
         )}
-        {preview?.projected_settlement && (
-          <p className="muted">
-            登録後の精算: {preview.projected_settlement.transfers.length}件(
-            {preview.projected_settlement.optimization.display_label})
-          </p>
-        )}
-      </div>
-      {previewError && <p className="error" role="alert">{previewError}</p>}
-      {saveError && <p className="error" role="alert">{saveError}</p>}
-      <p className="row actions">
-        <button type="button" disabled={!bd?.ok || pending || busy || !body} onClick={save}>
-          {editing ? "変更を保存" : "この内容で登録"}
-        </button>
-      </p>
-      {!bd?.ok && <p className="muted">すべての商品に負担者を選び、合計が一致すると登録できます。</p>}
-    </section>
+        {bd && <GlobalIssues issues={bd.issues.filter((i) => i.code !== "RECEIPT_TOTAL_MISMATCH")} />}
+        {!bd?.ok && <Muted className="mt-4">すべての商品に負担する人を選び、合計が一致すると登録できます。</Muted>}
+        {saveError && <ErrorText>{saveError}</ErrorText>}
+      </Panel>
+    </Screen>
+  );
+}
+
+function GlobalIssues({ issues }: { issues: Issue[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <ul aria-label="確認が必要な点" className="mt-4 space-y-1 text-[13px] text-destructive">
+      {issues.map((i, n) => <li key={n}>{i.message}</li>)}
+    </ul>
   );
 }
 
 function ReviewNote({ mark }: { mark?: ReviewMark }) {
   if (!mark) return null;
   return (
-    <p className="review-note">
+    <p className="mt-4 text-[13px] text-warning">
       読み取り結果を確認してください: {mark.reasons.map((r) => REASON_LABEL[r] ?? r).join("、")}
       {` (確信度 ${Math.round(mark.confidence * 100)}%)`}
     </p>

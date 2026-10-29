@@ -5010,6 +5010,17 @@
           "created_at": {
             "type": "string",
             "title": "Created At"
+          },
+          "changed_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed By Name"
           }
         },
         "type": "object",

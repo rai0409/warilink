@@ -1739,6 +1739,8 @@ export interface components {
             changed_by_me: boolean;
             /** Created At */
             created_at: string;
+            /** Changed By Name */
+            changed_by_name?: string | null;
         };
         /** SessionStateOut */
         SessionStateOut: {

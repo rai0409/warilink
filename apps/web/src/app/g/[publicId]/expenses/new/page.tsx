@@ -12,6 +12,7 @@ export default function NewExpensePage() {
       publicId={group.public_id}
       members={group.members}
       myMemberId={group.my_member_id}
+      backHref={`/g/${group.public_id}`}
       onSaved={() => router.push(`/g/${group.public_id}`)}
     />
   );
