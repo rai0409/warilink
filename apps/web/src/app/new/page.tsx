@@ -6,6 +6,7 @@ import { Plus, X } from "lucide-react";
 import { Body, BottomBar, ErrorText, Muted, PrimaryButton, Screen, TextButton, TextField, TopBar } from "@/components/kit";
 import { api, ensureGuest, errorMessage, type Group } from "@/lib/api";
 import { loadDefaultName, saveDefaultName } from "@/lib/prefs";
+import { uuid } from "@/lib/uuid";
 
 export default function NewGroupPage() {
   const router = useRouter();
@@ -14,7 +15,7 @@ export default function NewGroupPage() {
   const [members, setMembers] = useState<string[]>(["", ""]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [key] = useState(() => crypto.randomUUID());
+  const [key] = useState(() => uuid());
 
   useEffect(() => setMyName(loadDefaultName()), []);
 

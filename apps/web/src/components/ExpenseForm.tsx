@@ -24,6 +24,7 @@ import {
 import { ApiProblem, api, errorMessage, type ExpenseBody, type ExpenseDetail, type Member } from "@/lib/api";
 import { CATEGORY_LABEL, formatBp, parsePercentBp, parseYen, yen } from "@/lib/format";
 import { useExpensePreview } from "@/lib/use-preview";
+import { uuid } from "@/lib/uuid";
 
 type Mode = "equal" | "weight" | "percentage" | "exact";
 
@@ -97,7 +98,7 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
   const [mode, setMode] = useState<Mode>(init.mode);
   const [selected, setSelected] = useState<Set<string>>(init.selected);
   const [values, setValues] = useState<Record<string, string>>(init.values);
-  const [expenseId, setExpenseId] = useState(() => editing?.id ?? crypto.randomUUID());
+  const [expenseId, setExpenseId] = useState(() => editing?.id ?? uuid());
   const [panel, setPanel] = useState<"mode" | "shares" | "payers" | null>(null);
   const [pick, setPick] = useState<"add" | "replace" | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -150,7 +151,7 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
           body: { ...body, client_expense_id: expenseId },
         });
         const saved = expenseId;
-        setExpenseId(crypto.randomUUID());
+        setExpenseId(uuid());
         onSaved(saved);
       }
     } catch (e) {

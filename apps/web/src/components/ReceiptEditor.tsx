@@ -23,6 +23,7 @@ import {
 import { ApiProblem, api, errorMessage, type ExpenseBody, type ExpenseDetail, type Issue, type Member } from "@/lib/api";
 import { ADJUSTMENT_KIND_LABEL, ADJUSTMENT_SIGN, parseYen, yen } from "@/lib/format";
 import { useExpensePreview } from "@/lib/use-preview";
+import { uuid } from "@/lib/uuid";
 
 type AllocMode = "equal" | "units" | "exact";
 type TaxGroup = "" | "8" | "10";
@@ -73,7 +74,7 @@ const RULE_LABEL: Record<RuleType, string> = {
 /** いつも出す調整の欄(0 円なら送らない) */
 const STANDARD_KINDS: AdjKind[] = ["tax", "discount", "service_charge"];
 
-const newId = (p: string) => `${p}-${crypto.randomUUID().slice(0, 8)}`;
+const newId = (p: string) => `${p}-${uuid().slice(0, 8)}`;
 const emptyItem = (): ItemDraft => ({
   id: newId("i"), name: "", qty: "1", line: "", tax: "", mode: "equal", members: [], values: {},
 });
@@ -171,7 +172,7 @@ export function ReceiptEditor({
   const [assignValues, setAssignValues] = useState<Record<string, string>>({});
   const [conflict, setConflict] = useState(false);
   const [bulk, setBulk] = useState<Set<string>>(new Set());
-  const [expenseId, setExpenseId] = useState(() => editing?.id ?? crypto.randomUUID());
+  const [expenseId, setExpenseId] = useState(() => editing?.id ?? uuid());
   const [saveError, setSaveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -303,7 +304,7 @@ export function ReceiptEditor({
           },
         });
         const saved = expenseId;
-        setExpenseId(crypto.randomUUID());
+        setExpenseId(uuid());
         onSaved(saved);
       }
     } catch (e) {
