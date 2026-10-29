@@ -354,6 +354,30 @@
       }
     },
     "/api/v1/groups": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "My Groups",
+        "description": "自分が参加しているグループ(新しい順)。ホームの「最近のグループ」に使う。",
+        "operationId": "my_groups_api_v1_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GroupSummaryOut"
+                  },
+                  "type": "array",
+                  "title": "Response My Groups Api V1 Groups Get"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "groups"
@@ -650,6 +674,111 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/invites/status": {
+      "get": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Invite Status",
+        "description": "使える招待があるか(トークンは返さない。保存しているのはハッシュだけ)。",
+        "operationId": "invite_status_api_v1_groups__public_id__invites_status_get",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteStatusOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/groups/{public_id}/members/{member_id}": {
+      "patch": {
+        "tags": [
+          "groups"
+        ],
+        "summary": "Rename Member",
+        "description": "表示名を変える。自分の名前と、作成者なら名前だけのメンバー(未参加)の名前を変えられる。",
+        "operationId": "rename_member_api_v1_groups__public_id__members__member_id__patch",
+        "parameters": [
+          {
+            "name": "public_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Public Id"
+            }
+          },
+          {
+            "name": "member_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Member Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberRename"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupOut"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -1851,6 +1980,49 @@
         "summary": "Confirm Received",
         "description": "受取人による手動の受取確認。銀行による証明ではない。",
         "operationId": "confirm_received_api_v1_settlements__transfer_id__confirm_received_post",
+        "parameters": [
+          {
+            "name": "transfer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Transfer Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settlements/{transfer_id}/not-received": {
+      "post": {
+        "tags": [
+          "settlement"
+        ],
+        "summary": "Not Received",
+        "description": "受取人が「まだ受け取っていない」と記録する。送金の申告を取り消し、未送金に戻す(受取人だけ)。",
+        "operationId": "not_received_api_v1_settlements__transfer_id__not_received_post",
         "parameters": [
           {
             "name": "transfer_id",
@@ -3657,6 +3829,39 @@
         ],
         "title": "GroupStatsOut"
       },
+      "GroupSummaryOut": {
+        "properties": {
+          "public_id": {
+            "type": "string",
+            "title": "Public Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "member_count": {
+            "type": "integer",
+            "title": "Member Count"
+          },
+          "is_owner": {
+            "type": "boolean",
+            "title": "Is Owner"
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "public_id",
+          "title",
+          "member_count",
+          "is_owner",
+          "closed"
+        ],
+        "title": "GroupSummaryOut"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3786,6 +3991,31 @@
           "revoked"
         ],
         "title": "InviteRevokeOut"
+      },
+      "InviteStatusOut": {
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active",
+          "expires_at"
+        ],
+        "title": "InviteStatusOut"
       },
       "IssueOut": {
         "properties": {
@@ -3999,6 +4229,21 @@
           "is_me"
         ],
         "title": "MemberOut"
+      },
+      "MemberRename": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Display Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "display_name"
+        ],
+        "title": "MemberRename"
       },
       "MemberStat": {
         "properties": {

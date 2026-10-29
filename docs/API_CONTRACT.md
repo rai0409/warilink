@@ -277,3 +277,12 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 - `cursor` は不透明な文字列(中身は件数のオフセット。上限 10,000)。不正・改ざんは 422 `INVALID_CURSOR`。
 - 検索・集計はそのグループの有効な支出だけ。他グループのメンバー ID で絞っても他グループの支出は返らない。
 - 集計はメンバーへの表示のためだけに計算する。広告・外部提供への再利用はしない(同意の対象外の用途として扱わない)。
+
+### UI v2 で追加(2026-10-29)
+
+| Method | Path | 用途 | 権限 |
+|---|---|---|---|
+| GET | `/groups` | 自分が参加しているグループの一覧(新しい順)。`[{public_id, title, member_count, is_owner, closed}]` | 本人 |
+| GET | `/groups/{public_id}/invites/status` | 使える招待があるか `{active, expires_at}`(トークンは返さない。保存はハッシュだけ) | member |
+| PATCH | `/groups/{public_id}/members/{member_id}` | 表示名の変更 `{display_name}`。自分の名前、作成者なら未参加のメンバーの名前 | member / owner(他は 403) |
+| POST | `/settlements/{transfer_id}/not-received` | 受取人が「まだ受け取っていない」と記録し、送金の申告を取り消して未送金に戻す。確認済みは 409 `TRANSFER_NOT_REPORTED` | その送金の受取人 |

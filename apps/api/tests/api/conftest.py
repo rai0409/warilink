@@ -110,6 +110,9 @@ class User:
     def put(self, path, **kw):
         return self.req("PUT", path, **kw)
 
+    def patch(self, path, **kw):
+        return self.req("PATCH", path, **kw)
+
     def delete(self, path, **kw):
         return self.req("DELETE", path, **kw)
 
