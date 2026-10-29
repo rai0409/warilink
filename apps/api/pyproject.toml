@@ -44,10 +44,11 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -m 'not ocr'"
+addopts = "-q -m 'not ocr and not stress'"
 markers = [
   "db: requires PostgreSQL",
   "ocr: requires PaddleOCR (uv sync --group ocr); run with `make test-ocr`",
+  "stress: large calculation stress tests (minutes); run with `make test-stress`",
 ]
 
 [tool.ruff]
