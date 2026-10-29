@@ -82,3 +82,5 @@ export type PayerDestination = Schemas["PayerDestinationOut"];
 
 export type ExpenseSearch = Schemas["ExpenseSearchOut"];
 export type GroupStats = Schemas["GroupStatsOut"];
+export type GroupSummary = Schemas["GroupSummaryOut"];
+export type InviteStatus = Schemas["InviteStatusOut"];

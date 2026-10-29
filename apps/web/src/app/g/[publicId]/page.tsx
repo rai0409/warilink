@@ -1,15 +1,17 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { InviteBox } from "@/components/InviteBox";
+import { ArrowLeftRight, ChartColumn, Link2, ListFilter, Settings, UsersRound } from "lucide-react";
+import { Amount, Body, BottomBar, ButtonLink, ErrorText, List, Muted, Row, Screen, SectionTitle, TopBar } from "@/components/kit";
+import { CategoryIcon } from "@/components/kit/icons";
 import { api, errorMessage, type Expense, type SettlementPlan } from "@/lib/api";
-import { formatYen, SPLIT_MODE_LABEL } from "@/lib/format";
+import { yen } from "@/lib/format";
 import { memberNames, useGroup } from "@/lib/group-context";
 
-export default function GroupOverviewPage() {
+/** グループのホーム。自分の状況(金額は 1 つだけ)・最近の支出・各画面への入口 */
+export default function GroupHomePage() {
   const { group } = useGroup();
-  const publicId = group.public_id;
+  const pid = group.public_id;
   const [expenses, setExpenses] = useState<Expense[] | null>(null);
   const [plan, setPlan] = useState<SettlementPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -17,83 +19,63 @@ export default function GroupOverviewPage() {
   const load = useCallback(async () => {
     try {
       const [ex, p] = await Promise.all([
-        api<Expense[]>(`/groups/${publicId}/expenses`),
-        api<SettlementPlan>(`/groups/${publicId}/settlements/preview`, { method: "POST" }),
+        api<Expense[]>(`/groups/${pid}/expenses`),
+        api<SettlementPlan>(`/groups/${pid}/settlements/preview`, { method: "POST" }),
       ]);
       setExpenses(ex);
       setPlan(p);
-      setError(null);
     } catch (e) {
       setError(errorMessage(e));
     }
-  }, [publicId]);
+  }, [pid]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const names = memberNames(group);
-  const net = Object.fromEntries((plan?.balances ?? []).map((b) => [b.member_id, b.net_minor]));
-  const total = (expenses ?? []).reduce((s, e) => s + e.amount_minor, 0);
-  const myNet = net[group.my_member_id] ?? 0;
+  const myNet = plan?.balances.find((b) => b.member_id === group.my_member_id)?.net_minor ?? 0;
+  const base = `/g/${pid}`;
 
   return (
-    <>
-      {error && <p className="error" role="alert">{error}</p>}
-      <section className="card" aria-labelledby="me-h">
-        <h2 id="me-h">あなたの状況</h2>
-        <p className="big amount">
-          {myNet > 0 ? `${formatYen(myNet)} 受け取る予定` : myNet < 0 ? `${formatYen(-myNet)} 支払う予定` : "精算の必要はありません"}
-        </p>
-        {plan && plan.transfers.length > 0 && (
-          <p>
-            <Link href={`/g/${publicId}/settle`}>精算の詳細を見る</Link>
-          </p>
-        )}
-      </section>
-
-      <section className="card" aria-labelledby="members-h">
-        <h2 id="members-h">メンバーと残高</h2>
-        <ul className="list">
-          {group.members.map((m) => (
-            <li key={m.id}>
-              <span>
-                {m.display_name}
-                {m.is_me && "(あなた)"} {!m.claimed && <span className="muted">未参加</span>}
-              </span>
-              <span className="amount" data-testid={`net-${m.display_name}`}>
-                {formatYen(net[m.id] ?? 0)}
-              </span>
-            </li>
+    <Screen>
+      <TopBar title={group.title} subtitle={`${group.members.length}人${group.closed ? " · 終了" : ""}`} back="/" />
+      <Body>
+        {error && <ErrorText>{error}</ErrorText>}
+        <Amount
+          label={myNet > 0 ? "受け取る予定" : myNet < 0 ? "支払う予定" : "あなたの精算"}
+          value={myNet === 0 ? "精算なし" : yen(Math.abs(myNet))}
+        />
+        <SectionTitle>最近の支出</SectionTitle>
+        {expenses?.length === 0 && <Muted className="py-4">まだ支出はありません</Muted>}
+        <List aria-label="支出">
+          {(expenses ?? []).slice(0, 3).map((e) => (
+            <Row
+              key={e.id}
+              href={`${base}/expenses/${e.id}`}
+              icon={<CategoryIcon category={e.category} />}
+              label={e.title}
+              sub={`${Object.keys(e.payers).map((id) => names[id]).join("・")}が支払い`}
+              value={<span className="amount text-[16px] font-semibold text-foreground tabular-nums">{yen(e.amount_minor)}</span>}
+            />
           ))}
-        </ul>
-        <p className="muted">プラスは受け取る額、マイナスは支払う額です。合計支出 {formatYen(total)}</p>
-        {group.is_owner && <InviteBox publicId={publicId} />}
-      </section>
-
-      <section className="card" aria-labelledby="expenses-h">
-        <h2 id="expenses-h">支出一覧</h2>
-        <p className="row">
-          <Link className="button" href={`/g/${publicId}/expenses/new`}>支出を追加</Link>
-          <Link className="button secondary" href={`/g/${publicId}/receipt`}>レシートから商品別に追加</Link>
-          <Link className="button secondary" href={`/g/${publicId}/expenses`}>支出を探す</Link>
-        </p>
-        {expenses?.length === 0 && <p className="muted">まだ支出はありません</p>}
-        <ul className="list" aria-label="支出">
-          {(expenses ?? []).map((e) => (
-            <li key={e.id}>
-              <span>
-                <Link href={`/g/${publicId}/expenses/${e.id}`}>{e.title}</Link>
-                <br />
-                <span className="muted">
-                  {Object.keys(e.payers).map((id) => names[id]).join("・")}が立替 · {SPLIT_MODE_LABEL[e.split_mode] ?? e.split_mode}
-                </span>
-              </span>
-              <span className="amount">{formatYen(e.amount_minor)}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-    </>
+        </List>
+        <SectionTitle>グループ</SectionTitle>
+        <List aria-label="グループのメニュー">
+          <Row href={`${base}/expenses`} icon={<ListFilter strokeWidth={1.6} />} label="支出" value={expenses ? `${expenses.length}件` : ""} />
+          <Row href={`${base}/stats`} icon={<ChartColumn strokeWidth={1.6} />} label="集計" />
+          <Row href={`${base}/settle`} icon={<ArrowLeftRight strokeWidth={1.6} />} label="精算"
+            value={plan && plan.transfers.length > 0 ? `${plan.transfers.length}件の送金` : ""} />
+          <Row href={`${base}/members`} icon={<UsersRound strokeWidth={1.6} />} label="メンバー" value={`${group.members.length}人`} />
+          {group.is_owner && <Row href={`${base}/invite`} icon={<Link2 strokeWidth={1.6} />} label="招待リンク" />}
+          <Row href={`${base}/settings`} icon={<Settings strokeWidth={1.6} />} label="グループ設定" />
+        </List>
+      </Body>
+      {!group.closed && (
+        <BottomBar>
+          <ButtonLink href={`${base}/expenses/new`}>支出を追加</ButtonLink>
+        </BottomBar>
+      )}
+    </Screen>
   );
 }
