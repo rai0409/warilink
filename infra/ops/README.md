@@ -25,3 +25,12 @@
   `cd apps/api && WARILINK_DATABASE_URL=<復元先> ../../.venv/bin/python -m app.modules.identity.retention apply-tombstones --in "$WARILINK_TOMBSTONE_FILE"`
   (古いバックアップで戻すと、DB 内の一覧も古くなるため、必ず DB の外の一覧を使う)。何度実行しても同じ結果。
 - `WARILINK_TOMBSTONE_FILE` はバックアップと同じ保管先に置く(ID だけで個人情報は含まない)。未設定だと定期ジョブは失敗として通知する。
+
+## 監視と通知(STEP5)
+
+- `scripts/warilink_purge_job.sh` は失敗(画像の削除失敗・DB とファイルの不一致・削除済み一覧の書き出し失敗)を終了コード 1 と
+  `WARILINK_ALERT_CMD` で知らせる。通知先(メール・チャット)は導入先で設定する(**未設定**)。
+- 外形監視は `GET /api/v1/health`(DB に触れない)を使う。OCR を有効にする場合は `/plans` の `ocr_available` でワーカーの停止に気づける。
+- 復元訓練は月 1 回、**本番・既存の DB とは別の使い捨てコンテナ**で行う(例: `--container warilink-drill-db --port 55433`。
+  2026-10-29 に一時コンテナで実施し PASS、終了後に削除)。既存のコンテナで `drill` を実行しない(DB の作成・削除を伴う)。
+- API は `--no-proxy-headers --no-access-log` で起動する(`docs/SYSTEM_ARCHITECTURE.md` §8)。

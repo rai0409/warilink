@@ -37,7 +37,8 @@ export default defineConfig({
         `WARILINK_FEATURE_PAYMENT_DESTINATIONS=true WARILINK_FEATURE_OCR=true ` +
         // Node(Next の中継)の keep-alive 5 秒と uvicorn 既定の 5 秒が同じだと、閉じかけの接続を再利用して
         // ECONNRESET になることがある(2026-10-21 に 4 回中 1 回発生)。サーバー側を長くして競合を避ける
-        `../../.venv/bin/uvicorn app.main:app --port ${API_PORT} --timeout-keep-alive 65`,
+        // 本番と同じく X-Forwarded-For は アプリ側だけで扱い、アクセスログに URL を残さない(infra/compose.yaml と同じ)
+        `../../.venv/bin/uvicorn app.main:app --port ${API_PORT} --timeout-keep-alive 65 --no-proxy-headers --no-access-log`,
       url: `http://127.0.0.1:${API_PORT}/api/v1/health`,
       reuseExistingServer: false,
       timeout: 120_000,

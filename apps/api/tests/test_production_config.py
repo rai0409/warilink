@@ -94,6 +94,15 @@ def test_optional_features_are_available_when_enabled(monkeypatch, name):
         ({"rate_limit_overrides": {"guest_create:ip": (0, 3600)}}, "guest_create:ip"),
         ({"rate_limit_overrides": {"guest_create:ip": (20, 5)}}, "guest_create:ip"),
         ({"rate_limit_overrides": {"no_such_limit": (20, 60)}}, "不明な制限名"),
+        ({"session_ttl_days": 400}, "SESSION_TTL_DAYS"),
+        ({"step_up_max_age_seconds": 86400}, "STEP_UP_MAX_AGE_SECONDS"),
+        ({"webauthn_challenge_ttl_seconds": 3600}, "WEBAUTHN_CHALLENGE_TTL_SECONDS"),
+        ({"receipt_image_retention_days": 0}, "RECEIPT_IMAGE_RETENTION_DAYS"),
+        ({"audit_log_retention_days": 7}, "AUDIT_LOG_RETENTION_DAYS"),
+        ({"tombstone_retention_days": 7}, "TOMBSTONE_RETENTION_DAYS"),
+        ({"expired_session_retention_days": 0}, "EXPIRED_SESSION_RETENTION_DAYS"),
+        ({"database_url": "postgresql+psycopg://postgres:s3cret-from-env@db.internal/warilink"}, "スーパーユーザー"),
+        ({"feature_ocr": True, "receipt_storage_dir": "./var/receipts"}, "RECEIPT_STORAGE_DIR"),
     ],
 )
 def test_unsafe_production_is_rejected(over, needle):

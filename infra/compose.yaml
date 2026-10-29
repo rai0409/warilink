@@ -21,6 +21,10 @@ services:
 
   api:
     build: ../apps/api
+    # --no-proxy-headers: X-Forwarded-For は アプリ側の WARILINK_TRUSTED_PROXIES だけで扱う(uvicorn は既定で
+    #   127.0.0.1 からの X-Forwarded-For を信じて接続元を書き換え、回数制限の判定を偽装できてしまうため)
+    # --no-access-log: アクセスログの URL に招待トークンなどが残らないようにする
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers --no-access-log"]
     environment:
       WARILINK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-warilink}:${POSTGRES_PASSWORD:-warilink-dev-only}@db:5432/${POSTGRES_DB:-warilink}
       # 開発用の構成。production にすると http の Origin・Cookie の Secure なし・既定パスワードのため API は起動を拒否する

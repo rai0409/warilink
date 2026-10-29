@@ -298,3 +298,21 @@
 | 画面: 作成者の引き継ぎ・終了の操作と終了後の表示 | `apps/web/e2e/account-deletion.spec.ts` |
 
 保持期間は `docs/DATA_MODEL.md` §11(2026-10-28 に決定)。
+
+## STEP5: 運用・本番設定の点検(2026-10-29)
+
+| ゲート | 結果 | 根拠 |
+|---|---|---|
+| `CI_HEAD_MATCH` | STEP5 の PR の head SHA と一致する run で判定(PROMPT04) | 必須ジョブ: api(Ruff・mypy・pytest・秘密情報の検査・OpenAPI の一致)、web(TS 契約の一致・型検査・本番ビルド)、e2e(実 OCR・Playwright) |
+| `PRODUCTION_CONFIG` | PASS(自動で拒否する項目)/ 導入先の確認が残る | `tests/test_production_config.py`。`docs/SECURITY_PRIVACY.md` の公開前チェックリスト |
+| `BACKUP_RESTORE` | PASS(隔離した一時コンテナでの訓練) | backup → restore → 行数・画像のチェックサム・外部キー・アプリからの読み戻し。15 行・画像 1 枚で 4 秒 |
+| 削除の保持契約の復元時の遵守 | PASS(API テスト) | `tests/api/test_account_deletion.py::test_tombstones_reapply_deletions_after_restore` |
+| バックアップの暗号化・外部保管・アクセス権 | BLOCKED | 保管先・資格情報が未決定(手順のみ) |
+| 監視・通知 | BLOCKED | 通知先・外形監視が未設定(失敗時の終了コードと `WARILINK_ALERT_CMD` は実装済み) |
+| `CALCULATION_STRESS` | **UNEXECUTED** | 100,000 件のランダム配分・5,000 件の明細・2,000 件の台帳・10,000 件の 1 円不一致の大量計算は別ゲートとして残す |
+| `RELEASE_READY` | **BLOCKED** | 上記の BLOCKED / UNEXECUTED と、非商用ライセンス・KMS 未導入。公開の可否はプロダクト責任者が判断する |
+
+- 見つけて直したもの: STEP1 で OCR を既定で無効にした後、復元訓練(`drill`)の種データの画像アップロードが 503 で失敗していた
+  (訓練の元 DB だけ OCR を有効にした)。uvicorn の既定(127.0.0.1 からの `X-Forwarded-For` を信じる・アクセスログに URL を残す)を
+  compose と E2E で無効にした。本番の起動時に拒否する項目に、有効期間・保持期間の範囲と DB のスーパーユーザー接続を追加した。
+- 残るもの: `apps/api/Dockerfile` の既定の起動コマンドへの同じ引数の追加(STEP5 の変更範囲外)、ベースイメージの digest 固定。
