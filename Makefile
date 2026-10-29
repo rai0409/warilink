@@ -3,7 +3,7 @@ PY := $(VENV)/bin
 COMPOSE := docker compose -f infra/compose.yaml
 DEV_DB := postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink
 
-.PHONY: setup up up-ocr down db migrate api web worker test test-ocr lint e2e contracts
+.PHONY: setup up up-ocr down db migrate api web worker test test-ocr test-stress lint e2e contracts
 
 setup:
 	test -d $(VENV) || python3 -m venv $(VENV)
@@ -44,6 +44,10 @@ test: lint
 
 test-ocr:
 	cd apps/api && $(PY)/pytest -m ocr
+
+# 計算の大量テスト(数分)。結果は apps/api/var/stress-report.json。CI では実行しない
+test-stress:
+	cd apps/api && $(PY)/pytest -m stress -p no:cacheprovider
 
 e2e:
 	pnpm e2e
