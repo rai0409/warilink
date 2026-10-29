@@ -29,6 +29,7 @@ from app.models.tables import (
     Membership,
     SettlementTransfer,
 )
+from app.modules.groups.lifecycle import require_open
 from app.modules.receipts.service import link_receipt
 from app.modules.settlement import service as settle
 from app.modules.settlement.schemas import ExpensePreviewOut
@@ -254,6 +255,7 @@ def create_expense(public_id: str, body: ExpenseCreate, request: Request, db: Se
         require_feature("itemized_allocation")
     def do():
         acc = load_group_access(db, public_id, ident, for_update=True)
+        require_open(acc.group)
         eid = parse_uuid(body.client_expense_id) if body.client_expense_id else uuid.uuid4()
         if db.get(Expense, eid) is not None:
             raise ApiError(409, "EXPENSE_EXISTS", "この支出は既に登録されています")
@@ -309,6 +311,7 @@ def update_expense(public_id: str, expense_id: str, body: ExpenseIn, db: Session
         require_feature("itemized_allocation")
     expected = _parse_if_match(if_match)
     acc = load_group_access(db, public_id, ident, for_update=True)
+    require_open(acc.group)
     e = _load_expense(db, acc.group, expense_id, for_update=True)
     if e.state != "active":
         raise not_found()
@@ -337,6 +340,7 @@ def delete_expense(public_id: str, expense_id: str, db: Session = Depends(get_db
                    ident: Identity = Depends(current_identity), if_match: str | None = Header(default=None)):
     expected = _parse_if_match(if_match)
     acc = load_group_access(db, public_id, ident, for_update=True)
+    require_open(acc.group)
     e = _load_expense(db, acc.group, expense_id, for_update=True)
     if e.state != "active":
         raise not_found()

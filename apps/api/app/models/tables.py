@@ -105,6 +105,23 @@ class RateLimitEvent(Base):
     )
 
 
+class DeletionTombstone(Base):
+    """削除済み一覧(STEP4)。バックアップから復元した後に削除を再適用するための ID だけを持つ(個人情報は持たない)。
+
+    DB の外(WARILINK_TOMBSTONE_FILE)にも書き出し、古いバックアップで DB を戻しても一覧を失わないようにする。
+    """
+
+    __tablename__ = "deletion_tombstones"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # identity | destination | group
+    target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = _created()
+    __table_args__ = (
+        CheckConstraint("kind IN ('identity','destination','group')", name="ck_tombstone_kind"),
+        UniqueConstraint("kind", "target_id", name="uq_tombstone_target"),
+    )
+
+
 class SessionRow(Base):
     __tablename__ = "sessions"
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -126,7 +143,9 @@ class Group(Base):
     # 支出の追加・変更・削除ごとに +1。精算バッチ確定時の楽観ロックに使う。
     ledger_version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     created_at: Mapped[datetime] = _created()
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # 作成者が終了(以後は閲覧のみ)
+    # 参加者(本人と結び付いたメンバー)が誰もいなくなった時刻。一定期間後に完全に削除する(STEP4)
+    orphaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (CheckConstraint("currency = 'JPY'", name="ck_group_currency_jpy"),)
 
 

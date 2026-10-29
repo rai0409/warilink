@@ -34,6 +34,7 @@ from app.models.tables import (
     PaymentDestinationVersion,
     TransferDestinationPin,
 )
+from app.modules.groups.lifecycle import add_tombstone
 
 from . import crypto
 
@@ -291,13 +292,22 @@ def erase(request: Request, db: Session = Depends(get_db), ident: Identity = Dep
     d = _mine(db, ident, for_update=True)
     if d is None:
         raise not_found()
+    crypto_erase(db, d)
+    add_tombstone(db, "destination", d.id)  # バックアップから戻したときに、この消去を再適用する
+    # V0 の例外であることを監査に残す。復号・共有・再利用できる状態は一切残さない。
+    _audit(db, ident, "destination.erase", d.id, legacy_feature_disabled=legacy_cleanup)
+    db.commit()
+
+
+def crypto_erase(db: Session, d: PaymentDestination) -> None:
+    """すべての版の暗号文・nonce・包んだ鍵を消して復号できなくする(伏せ字だけ残る)。commit は呼び出し側。
+
+    退会(identity/account.py)からも使う。DB の現行の行だけが対象で、バックアップ・WAL に残る暗号文は消えない。
+    """
     db.execute(update(PaymentDestinationVersion).where(PaymentDestinationVersion.destination_id == d.id)
                .values(wrapped_dek=None, nonce=None, ciphertext=None))
     d.erased_at = now()
     d.share_with_payers = False
-    # V0 の例外であることを監査に残す。復号・共有・再利用できる状態は一切残さない。
-    _audit(db, ident, "destination.erase", d.id, legacy_feature_disabled=legacy_cleanup)
-    db.commit()
 
 
 # ---------------------------------------------------------------- 精算の支払者への表示

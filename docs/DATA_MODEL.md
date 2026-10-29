@@ -179,3 +179,34 @@
 
 - `expenses.category`(NULL 許可、CHECK で 8 種類に限定)と索引 `ix_expense_group_occurred(group_id, occurred_on)` を追加。
 - マイグレーション `20261021_69e7bf0883a7_p09_expense_category.py` は追加のみ(既存の支出は NULL = 未分類)。
+
+## 11. データの保持と削除(STEP4、2026-10-28)
+
+保持期間は 2026-10-28 に利用者(プロダクト責任者)が決定した方針。法令で日数が定められたものではなく、利用規約・
+プライバシーポリシーに記載する運用方針として扱う(個人情報保護法の「利用する必要がなくなったときは遅滞なく消去」の考え方に沿い、
+目的を説明できる最短の期間にした)。期限処理は `purge-images` の定期ジョブ(1 日 1 回)で行い、何度実行しても同じ結果になる。
+
+| データ | 保持・削除 | 設定 |
+|---|---|---|
+| レシート画像 | アップロードから 30 日で削除 | `WARILINK_RECEIPT_IMAGE_RETENTION_DAYS` |
+| OCR の原文・行ログ | 画像と同時に消す(支出の根拠となる商品・金額は残す) | 同上 |
+| WebAuthn challenge | 使用済み・期限切れ(既定 300 秒)はすぐ削除 | `WARILINK_WEBAUTHN_CHALLENGE_TTL_SECONDS` |
+| セッション | 失効・期限切れから 30 日で削除 | `WARILINK_EXPIRED_SESSION_RETENTION_DAYS` |
+| 招待 | 失効・期限切れから 30 日で削除 | `WARILINK_EXPIRED_INVITE_RETENTION_DAYS` |
+| 監査ログ | 1 年で削除(ID・件数だけで、口座・名前は書かない) | `WARILINK_AUDIT_LOG_RETENTION_DAYS` |
+| 回数制限の記録 | 各上限の期間が過ぎた行を記録のたびに削除。バックアップに中身を含めない | `RATE_LIMITS` |
+| 振込先 | 本人の削除・退会で全版の暗号文・nonce・包んだ鍵を消す(伏せ字だけ残る) | — |
+| 退会した本人の identity | 無効化(行は残す。支出・監査の参照先のため)。セッション・Passkey は失効 | — |
+| 名前だけのメンバー行・支出・精算 | 他のメンバーと共有する台帳として、グループが削除されるまで残す | — |
+| 参加者不在のグループ | 最後の参加者が抜けて(退会して)から 30 日で、すべての行と画像を削除 | `WARILINK_ORPHANED_GROUP_RETENTION_DAYS` |
+| 終了したグループ | 作成者が終了してから 1 年で、すべての行と画像を削除 | `WARILINK_CLOSED_GROUP_RETENTION_DAYS` |
+| バックアップ | 毎日取り、30 日分を残す(`scripts/warilink_backup.py prune`) | `BACKUP_RETENTION_DAYS` |
+| 削除済み一覧(tombstone) | 30 日(バックアップと同じ)。DB と DB の外(`WARILINK_TOMBSTONE_FILE`)の両方に持つ | `WARILINK_TOMBSTONE_RETENTION_DAYS` |
+
+- 作成者が抜ける・退会すると、参加の早い(`position` の小さい)参加者へ自動で引き継ぐ。作成者は手動でも引き継げる
+  (`POST /groups/{id}/owner`)。誰もいなければ「参加者不在」(`groups.orphaned_at`)になり、誰かが参加すると取り消す。
+- 作成者は「終了」できる(`POST /groups/{id}/close`、`groups.closed_at`)。以後は閲覧のみで、支出・精算・メンバー・招待・参加の
+  変更は `409 GROUP_CLOSED`。招待はすべて失効する。
+- 復元: バックアップから戻した後は、DB の外の削除済み一覧で退会・振込先の消去・グループの削除を再適用する
+  (`python -m app.modules.identity.retention apply-tombstones`、`infra/ops/README.md`)。これで「削除したデータは、最長 30 日で
+  バックアップからも消え、それより前に戻しても削除が再適用される」。WAL・スナップショットなど DB 以外の複製は、保管先の設定に従う。

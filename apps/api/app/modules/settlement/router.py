@@ -20,6 +20,7 @@ from app.models.tables import (
     SettlementTransfer,
     TransferEvent,
 )
+from app.modules.groups.lifecycle import require_open
 
 from . import service
 from .schemas import BalancesOut, BatchOut, SettlementPlanOut, TransferDetailOut, TransferOut
@@ -56,6 +57,7 @@ def create_batch(public_id: str, body: BatchCreate, request: Request, db: Sessio
     require_feature("settlement")
     def do():
         acc = load_group_access(db, public_id, ident, for_update=True)  # グループ行ロックで直列化
+        require_open(acc.group)
         group = acc.group
         if body.expected_ledger_version != group.ledger_version:
             raise ApiError(409, "REVISION_CONFLICT", "確認後に支出が変更されました。最新の精算案を確認してください",
@@ -153,6 +155,7 @@ def report_paid(transfer_id: str, db: Session = Depends(get_db), ident: Identity
     """支払者による送金申告。アプリは送金を実行しない。申告は銀行での確認を意味しない。"""
     require_feature("settlement_confirmations")
     t, me = _load_transfer_for_party(db, transfer_id, ident, for_update=True)
+    require_open(db.get(Group, t.group_id))  # type: ignore[arg-type]
     if me.id != t.from_member_id:
         raise ApiError(403, "ACCESS_DENIED", "送金申告は支払う本人だけが行えます")
     if t.status in ("reported_paid", "recipient_confirmed"):
@@ -171,6 +174,7 @@ def confirm_received(transfer_id: str, db: Session = Depends(get_db), ident: Ide
     """受取人による手動の受取確認。銀行による証明ではない。"""
     require_feature("settlement_confirmations")
     t, me = _load_transfer_for_party(db, transfer_id, ident, for_update=True)
+    require_open(db.get(Group, t.group_id))  # type: ignore[arg-type]
     if me.id != t.to_member_id:
         raise ApiError(403, "ACCESS_DENIED", "受取確認は受け取る本人だけが行えます")
     if t.status == "recipient_confirmed":

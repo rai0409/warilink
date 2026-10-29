@@ -40,6 +40,9 @@ export default function GroupLayout({ children }: { children: React.ReactNode })
   return (
     <GroupContext.Provider value={{ group, reload }}>
       <h1>{group.title}</h1>
+      {group.closed && (
+        <p className="notice" role="status">このグループは終了しています。閲覧だけできます。</p>
+      )}
       <nav className="tabs" aria-label="グループのメニュー">
         {TABS.map((t) => {
           const href = base + t.href;

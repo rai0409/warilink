@@ -2,6 +2,7 @@
 """PostgreSQL とレシート画像を、整合したひとまとまりとしてバックアップ・復元する(運用手順の実装)。
 
   backup  --db NAME --receipts-dir DIR --out OUT_DIR       ダンプ(pg_dump -Fc)+画像+manifest.json
+  prune   --root DIR [--days 30] [--dry-run]                保持日数を過ぎたバックアップを削除
   restore --from OUT_DIR --target-db warilink_restore_* --receipts-target EMPTY_DIR
                                                           新しい使い捨て DB と空ディレクトリにだけ復元し、検証する
   drop    --target-db warilink_restore_*                  復元先の使い捨て DB を消す
@@ -27,7 +28,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +240,40 @@ def cmd_drill(args: argparse.Namespace) -> int:
     return rc
 
 
+# ---------------------------------------------------------------- prune(保持日数を過ぎたバックアップの削除)
+
+BACKUP_RETENTION_DAYS = 30  # docs/DATA_MODEL.md §11。削除済み一覧(tombstone)の保持日数と同じ
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    """--root の直下にある、このスクリプトが作ったバックアップ(manifest.json がある)のうち、保持日数を過ぎたものを消す。
+
+    manifest の無いディレクトリ・ファイルには触れない。--dry-run は一覧を出すだけ。
+    """
+    root = Path(args.root)
+    if not root.is_dir():
+        raise Refused(f"バックアップの置き場所が見つかりません: {root}")
+    cutoff = datetime.now(UTC) - timedelta(days=args.days)
+    expired, kept = [], 0
+    for d in sorted(root.iterdir()):
+        m = d / "manifest.json"
+        if not (d.is_dir() and m.is_file()):
+            continue
+        manifest = json.loads(m.read_text(encoding="utf-8"))
+        if manifest.get("format") != "warilink-backup-1":
+            continue
+        if datetime.fromisoformat(manifest["created_at"]) < cutoff:
+            expired.append(d)
+        else:
+            kept += 1
+    if not args.dry_run:
+        for d in expired:
+            shutil.rmtree(d)
+    print(json.dumps({"dry_run": args.dry_run, "days": args.days, "removed": [d.name for d in expired],
+                      "kept": kept}, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="warilink_backup.py")
     p.add_argument("--container", default=os.environ.get("WARILINK_DB_CONTAINER", "warilink-db-1"))
@@ -258,9 +293,14 @@ def main(argv: list[str] | None = None) -> int:
     dr = sub.add_parser("drill")
     dr.add_argument("--workdir", required=True)
     dr.add_argument("--keep", action="store_true", help="作業ディレクトリを残す(調査用)")
+    pr = sub.add_parser("prune")
+    pr.add_argument("--root", required=True, help="バックアップを置いているディレクトリ")
+    pr.add_argument("--days", type=int, default=BACKUP_RETENTION_DAYS)
+    pr.add_argument("--dry-run", action="store_true")
     a = p.parse_args(argv)
     try:
-        return {"backup": cmd_backup, "restore": cmd_restore, "drop": cmd_drop, "drill": cmd_drill}[a.cmd](a)
+        return {"backup": cmd_backup, "restore": cmd_restore, "drop": cmd_drop, "drill": cmd_drill,
+                "prune": cmd_prune}[a.cmd](a)
     except Refused as e:
         print(json.dumps({"refused": str(e)}, ensure_ascii=False), file=sys.stderr)
         return 3
