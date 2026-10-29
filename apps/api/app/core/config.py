@@ -151,6 +151,42 @@ def rate_limit_problems(s: "Settings") -> list[str]:
     return out
 
 
+# 本番で受け付ける範囲(STEP5)。認証の有効期間を長くしすぎる・保持期間を 0 以下にする誤設定を起動時に止める
+OPERATION_BOUNDS = {
+    "session_ttl_days": (1, 365),
+    "step_up_max_age_seconds": (60, 3600),
+    "webauthn_challenge_ttl_seconds": (60, 600),
+    "receipt_image_retention_days": (1, 365),
+    "audit_log_retention_days": (30, 3650),
+    "expired_session_retention_days": (1, 365),
+    "expired_invite_retention_days": (1, 365),
+    # 削除済み一覧はバックアップの保持日数(30 日)より短いと、古いバックアップから戻したときに再適用できない
+    "tombstone_retention_days": (30, 365),
+    "orphaned_group_retention_days": (1, 3650),
+    "closed_group_retention_days": (1, 3650),
+}
+
+
+def operations_problems(s: "Settings") -> list[str]:
+    from sqlalchemy.engine import make_url  # noqa: PLC0415
+
+    out: list[str] = []
+    for name, (lo, hi) in OPERATION_BOUNDS.items():
+        v = getattr(s, name)
+        if not lo <= v <= hi:
+            out.append(f"WARILINK_{name.upper()} は {lo}〜{hi} の範囲にしてください")
+    try:
+        user = make_url(s.database_url).username or ""
+    except Exception:  # noqa: BLE001
+        user = ""  # URL の形式が不正(値はメッセージに出さない)
+    if user in ("", "postgres"):
+        # アプリは必要な表だけを扱う専用ユーザーで接続する(スーパーユーザーで動かさない)
+        out.append("WARILINK_DATABASE_URL はスーパーユーザー(postgres)ではなくアプリ専用のユーザーにしてください")
+    if s.feature_ocr and not s.receipt_storage_dir.startswith("/"):
+        out.append("WARILINK_RECEIPT_STORAGE_DIR は絶対パスにしてください(OCR を有効にする場合)")
+    return out
+
+
 def production_problems(s: "Settings") -> list[str]:
     """本番(environment=production)で拒否する設定の一覧。値そのもの(秘密)はメッセージに含めない。"""
     out: list[str] = []
@@ -181,6 +217,7 @@ def production_problems(s: "Settings") -> list[str]:
 
         out.extend(key_problems(s))
     out.extend(rate_limit_problems(s))
+    out.extend(operations_problems(s))
     if s.feature_ads or s.feature_billing:
         out.append("広告・課金は未実装のため本番で有効にできません(WARILINK_FEATURE_ADS / WARILINK_FEATURE_BILLING)")
     return out

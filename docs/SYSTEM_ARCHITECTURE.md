@@ -145,3 +145,18 @@ class BankDataProvider(Protocol):
 - Postgres migrationをCI、テストはDBごと分離。安全なfixturesのみ。
 - lint/format/type-check/test e2eをCIに設置。
 - 本番銀行・決済はFEATURE_FLAGで初期OFF、debug UIでも実口座は絶対に接続しない。
+
+## 8. 運用と復旧(STEP5、2026-10-29)
+
+| 項目 | 目標・現状 |
+|---|---|
+| RPO(失ってよいデータの最大量) | 24 時間(バックアップは 1 日 1 回)。本番の保管先が決まるまで**運用は未開始**(手順のみ) |
+| RTO(復旧までの目標時間) | 4 時間(新しい DB への restore → 検証 → 削除済み一覧の再適用 → 切り替え)。訓練(合成データ 15 行・画像 1 枚)は 4 秒で完了。本番規模の計測は未実施 |
+| バックアップの保持 | 30 日(`scripts/warilink_backup.py prune`)。暗号化・外部保管は保管先が決まるまで**未実施** |
+| 復元後の削除の再適用 | `python -m app.modules.identity.retention apply-tombstones`(必須。`infra/ops/README.md`) |
+| 監視 | 定期ジョブの失敗(`WARILINK_ALERT_CMD`)、`GET /api/v1/health`、OCR ワーカーの heartbeat(`/plans.ocr_available`)。通知先・外形監視は**未設定** |
+
+- API サーバーは `uvicorn --no-proxy-headers --no-access-log` で起動する。uvicorn は既定で 127.0.0.1 からの `X-Forwarded-For` を
+  信じて接続元を書き換えるため、回数制限の判定をアプリ側の `WARILINK_TRUSTED_PROXIES` だけに任せる。アクセスログには招待トークンを含む
+  URL が残るため出さない(`infra/compose.yaml`、`apps/web/playwright.config.ts`)。`apps/api/Dockerfile` の既定の起動コマンドは
+  まだ旧設定で、本番イメージでは同じ引数で起動する(Dockerfile の修正は STEP5 の変更範囲外のため別途)。

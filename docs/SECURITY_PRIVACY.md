@@ -186,3 +186,21 @@
 - [ ] Bank codeが受取銀行の正式取得明細に載ることを送金元×受取先ごとに検証
 - [ ] 暗号化、監査、復元、バックアップ、削除、アクセス制限のペネトレーション検証
 - [ ] 銀行取引の生データがログ/広告SDK/分析SDKに漏れないテスト
+
+## 公開前チェックリスト(STEP5、2026-10-29)
+
+起動時に自動で拒否するもの(`apps/api/app/core/config.py`、`tests/test_production_config.py`)と、導入先で確認するものを分ける。
+
+| 項目 | 自動の拒否 | 導入先での確認 |
+|---|---|---|
+| HTTPS・Cookie | `COOKIE_SECURE`、https の `ALLOWED_ORIGINS`(ワイルドカード・localhost・パス付きは拒否)、RP ID | TLS 終端の逆プロキシで HTTP→HTTPS、HSTS |
+| CSRF | 本番は `X-WariLink-CSRF` と許可された Origin の両方が必須 | — |
+| Cookie 属性 | HttpOnly・SameSite=Lax・Secure(コード固定) | — |
+| 機能フラグ | 銀行連携・広告・課金は本番で有効化を拒否。Passkey・振込先・OCR は既定で無効 | 有効化するときは同じリリースで API・画面・運用・法務を確認 |
+| 秘密 | DB の既定パスワード、回数制限の秘密(32 文字以上)、振込先の鍵(開発用の固定鍵・不正な鍵を拒否) | 秘密は環境変数・シークレットストアで渡す。KMS は**未導入**(鍵の入れ替えは `payment_destinations.cli rotate`) |
+| DB 権限 | スーパーユーザー(`postgres`)での接続を拒否 | アプリ専用ユーザーに必要な表の権限だけを与える(マイグレーションは別ユーザーでもよい) |
+| 有効期間・保持期間 | セッション 1〜365 日、step-up 60〜3600 秒、challenge 60〜600 秒、各保持期間の範囲、削除済み一覧はバックアップ(30 日)以上 | — |
+| 接続元・回数制限 | 回数制限の無効化・`TRUSTED_PROXIES` 未設定・範囲外の上限を拒否 | 逆プロキシが利用者の IP を `X-Forwarded-For` の末尾に追記すること。uvicorn は `--no-proxy-headers` |
+| ログ | — | uvicorn は `--no-access-log`(URL の招待トークンを残さない)。アプリのログに IP・口座・トークンを出さない(コード上なし) |
+| 依存の固定 | CI は `uv sync --frozen`・`pnpm install --frozen-lockfile` | コンテナのベースイメージ(`python:3.13-slim`・`node:22-alpine`)はタグ指定のみで digest 固定は未実施 |
+| バックアップ・復元 | — | 暗号化・外部保管・アクセス権・鍵との分離は保管先が決まるまで**未実施**。復元後に削除済み一覧を再適用 |

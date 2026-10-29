@@ -204,8 +204,9 @@ def cmd_drill(args: argparse.Namespace) -> int:
         psql(args, "postgres", f'CREATE DATABASE "{src_db}"')
         url = f"postgresql+psycopg://{args.user}:{os.environ.get('WARILINK_DRILL_DB_PASSWORD', 'warilink-dev-only')}" \
               f"@localhost:{args.port}/{src_db}"
+        # 種データにはレシート画像を含める(V0 の既定では OCR が無効なので、訓練の元 DB だけで有効にする)
         env = {**os.environ, "WARILINK_DATABASE_URL": url, "WARILINK_RECEIPT_STORAGE_DIR": str(src_images),
-               "WARILINK_ENVIRONMENT": "test", "PYTHONPATH": str(ROOT / "apps" / "api")}
+               "WARILINK_ENVIRONMENT": "test", "WARILINK_FEATURE_OCR": "true", "PYTHONPATH": str(ROOT / "apps" / "api")}
         api = ROOT / "apps" / "api"
         py = str(ROOT / ".venv" / "bin" / "python")
         subprocess.run([py, "-m", "alembic", "upgrade", "head"], cwd=api, env=env, check=True, capture_output=True)

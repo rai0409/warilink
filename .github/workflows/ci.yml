@@ -1,4 +1,5 @@
-# 注意: このワークフローは GitHub 上ではまだ実行・検証していない(2026-10-20 時点。ローカルで同じコマンドを実行して確認)。
+# 必須ジョブ: api(Ruff・mypy・pytest・API 契約の一致・秘密情報の検査)、web(型検査・本番ビルド・TS 契約の一致)、
+# e2e(実 PaddleOCR の結合テスト・Playwright)。GitHub Actions で実行済み(結果は各 PR の run を参照)。
 # DB はジョブごとの使い捨てサービスコンテナ(ジョブ終了で破棄)。テスト側も DB 名・ホストを検査し、
 # 使い捨て DB 以外では downgrade / TRUNCATE / E2E を行わずに失敗する(apps/api/tests/api/conftest.py, playwright.config.ts)。
 name: ci
@@ -28,8 +29,8 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U warilink" --health-interval 3s --health-timeout 3s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
       # 傾き補正のテストが日本語の合成レシート画像を作るため、日本語フォントを入れる
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk
@@ -37,6 +38,16 @@ jobs:
       # ワーカーのテスト(固定アダプター)が OpenCV を使うため OCR の依存も入れる。実モデルのテストは -m 'not ocr' で除外
       - run: cd apps/api && UV_PROJECT_ENVIRONMENT=../../.venv ../../.venv/bin/uv sync --frozen --group ocr
       - run: cd apps/api && ../../.venv/bin/ruff check app tests && ../../.venv/bin/mypy
+      # 秘密情報: .env を追跡していないこと・鍵らしい文字列がないこと(値は出力しない)
+      - name: Secret scan
+        run: |
+          ! git ls-files | grep -E '(^|/)\.env$'
+          ! git grep -lE 'sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|BEGIN (RSA|EC|OPENSSH) PRIVATE' -- ':!*.lock' ':!pnpm-lock.yaml'
+      # API 契約: コードから出した OpenAPI がコミット済みの packages/contracts/openapi.json と一致すること
+      - name: OpenAPI contract is up to date
+        run: |
+          cd apps/api && ../../.venv/bin/python ../../scripts/export_openapi.py "$RUNNER_TEMP/openapi.json"
+          diff -u ../../packages/contracts/openapi.json "$RUNNER_TEMP/openapi.json"
       - run: cd apps/api && ../../.venv/bin/pytest
         env:
           WARILINK_DATABASE_URL: postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_test
@@ -45,12 +56,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
         with: { version: 9.15.4 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # TS の型(packages/contracts/src/schema.d.ts)がコミット済みの OpenAPI から作り直したものと一致すること
+      - name: TypeScript contract is up to date
+        run: |
+          cd packages/contracts && pnpm exec openapi-typescript openapi.json -o "$RUNNER_TEMP/schema.d.ts"
+          diff -u src/schema.d.ts "$RUNNER_TEMP/schema.d.ts"
       - run: pnpm web:typecheck && pnpm web:build
 
   # 重いジョブ: 本物の PaddleOCR(CPU)を使う結合テストと、モバイル・デスクトップの E2E(実 API・実 DB・実ワーカー)。
@@ -70,19 +86,19 @@ jobs:
       E2E_DATABASE_URL: postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_e2e
       WARILINK_OCR_CPU_THREADS: "2"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.13" }
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 9.15.4 }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       # 合成レシートの描画用の日本語フォント(OFL-1.1)と OpenCV の実行時ライブラリ
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fonts-noto-cjk libgl1 libglib2.0-0
       - run: python -m venv .venv && .venv/bin/pip install uv==0.13.1
       - run: cd apps/api && UV_PROJECT_ENVIRONMENT=../../.venv ../../.venv/bin/uv sync --frozen --group ocr
       - name: PaddleOCR models cache (公式配布元から初回取得、名前で固定)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.paddlex/official_models
           key: paddlex-models-PP-OCRv6_medium-${{ hashFiles('apps/api/uv.lock') }}
@@ -91,7 +107,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @warilink/web exec playwright install --with-deps chromium
       - run: pnpm e2e
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: playwright-report
