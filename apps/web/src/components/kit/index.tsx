@@ -7,7 +7,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
@@ -523,9 +523,18 @@ export function Panel({
   children: React.ReactNode;
   footer?: React.ReactNode;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // 開いている間は、後ろの画面(同じ親の他の要素)を操作・読み上げの対象から外す
+  useEffect(() => {
+    const el = ref.current;
+    if (!open || !el?.parentElement) return;
+    const others = Array.from(el.parentElement.children).filter((c) => c !== el && !c.hasAttribute("inert"));
+    others.forEach((c) => c.setAttribute("inert", ""));
+    return () => others.forEach((c) => c.removeAttribute("inert"));
+  }, [open]);
   if (!open) return null;
   return (
-    <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-30 overflow-y-auto bg-board">
+    <div ref={ref} role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-30 overflow-y-auto bg-board">
       <Screen>
         <header className="sticky top-0 z-20 grid grid-cols-[44px_1fr_44px] items-center bg-background/95 px-3 pt-3 pb-2 backdrop-blur">
           <button type="button" aria-label="戻る" onClick={onBack} className="grid size-11 place-items-center">
