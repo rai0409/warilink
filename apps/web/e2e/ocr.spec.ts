@@ -4,7 +4,7 @@ import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { PNG_TINY } from "./fixtures";
-import { createGroup, groupHome, itemButton, newUser, sumOf } from "./helpers";
+import { createGroup, groupHome, itemButton, newUser, openTab, sumOf } from "./helpers";
 
 // 本物の PaddleOCR ワーカーで合成レシートを読み取り、確認・訂正して登録する(外部サービスは使わない)。
 
@@ -23,7 +23,8 @@ test("レシート画像を読み取り、下書きを確認して商品別に�
   const a = await newUser(browser, { baseURL });
   await createGroup(a, "OCRテスト", "Bさん");
   const home = groupHome(a);
-  await a.goto(`${home}/receipt`);
+  // 支出を追加の最初の画面から撮影できる(商品別を選ばなくてよい)
+  await openTab(a, "支出を追加");
   await expect(a.getByText(/今月の残り: 3枚/)).toBeVisible();
   await a.getByLabel("レシートを撮影・画像を選ぶ").setInputFiles(image);
 

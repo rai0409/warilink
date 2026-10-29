@@ -48,6 +48,8 @@ type Props = {
   backHref: string;
   /** 編集中に別の画面で更新されたとき、最新の内容を読み直す */
   onReloadLatest?: () => void;
+  /** 入力欄の上に置くもの(新規登録のレシート撮影など) */
+  header?: React.ReactNode;
 };
 
 type Spec = {
@@ -87,7 +89,7 @@ function initialState(editing: ExpenseDetail | undefined, members: Member[], me:
  * 支出の入力(均等・比率・割合・金額指定)。分け方・負担額・立て替えた人はそれぞれの画面で決める。
  * 負担額は入力のたびにサーバーのプレビュー API で計算する(画面では金額を計算しない)。
  */
-export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, backHref, onReloadLatest }: Props) {
+export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, backHref, onReloadLatest, header }: Props) {
   const router = useRouter();
   const init = useMemo(() => initialState(editing, members, myMemberId), [editing, members, myMemberId]);
   const [title, setTitle] = useState(init.title);
@@ -185,12 +187,13 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
     <Screen>
       <TopBar title={editing ? "支出を編集" : "支出を追加"} back={backHref} />
       <Body>
+        {header}
         <TextField label="内容" value={title} onChange={setTitle} onClear={() => setTitle("")} maxLength={100} placeholder="夕食" />
         <TextField label="金額(円)" value={amountText} onChange={setAmountText} inputMode="numeric" placeholder="0"
           inputClassName="amount text-[20px] font-semibold tabular-nums" aria-invalid={amountText !== "" && amount === null} />
         {amountText && amount === null && <ErrorText className="my-2">金額は整数の円で入力してください</ErrorText>}
         <div className="mt-6 grid grid-cols-2 gap-3">
-          <label className="block text-[13px] text-muted-foreground">
+          <label className="block min-w-0 text-[13px] text-muted-foreground">
             カテゴリ(任意)
             <select value={category} onChange={(e) => setCategory(e.target.value)}
               className="mt-2 h-12 w-full rounded-md border border-input bg-background px-3 text-[15px] text-foreground">
@@ -200,10 +203,10 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
               ))}
             </select>
           </label>
-          <label className="block text-[13px] text-muted-foreground">
+          <label className="block min-w-0 text-[13px] text-muted-foreground">
             日付(任意)
             <input type="date" value={occurredOn} onChange={(e) => setOccurredOn(e.target.value)}
-              className="mt-2 h-12 w-full rounded-md border border-input bg-background px-3 text-[15px] text-foreground" />
+              className="mt-2 block h-12 w-full min-w-0 appearance-none rounded-md border border-input bg-background px-3 text-left text-[15px] leading-[46px] text-foreground [&::-webkit-date-and-time-value]:text-left" />
           </label>
         </div>
         <List className="mt-8">

@@ -23,7 +23,7 @@ export default function JoinPage() {
       .then(() => api<Preview>(`/invites/${encodeURIComponent(token)}`))
       .then((p) => {
         setPreview(p);
-        setNewName(loadDefaultName());
+        setNewName((v) => v || loadDefaultName());
       })
       .catch((e) => setError(errorMessage(e)));
   }, [token]);

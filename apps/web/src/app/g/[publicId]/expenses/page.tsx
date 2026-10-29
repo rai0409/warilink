@@ -145,10 +145,10 @@ export default function ExpensesPage() {
         <p className="mt-4 text-[13px] text-muted-foreground">期間</p>
         <div className="mt-2 flex items-center gap-2">
           <input aria-label="この日から" type="date" value={draft.from} onChange={(e) => setD("from", e.target.value)}
-            className="h-11 min-w-0 flex-1 rounded-md border border-input px-3 text-[14px]" />
+            className="h-11 min-w-0 flex-1 appearance-none rounded-md border border-input bg-background px-3 text-left text-[14px] leading-[42px] [&::-webkit-date-and-time-value]:text-left" />
           <span aria-hidden>—</span>
           <input aria-label="この日まで" type="date" value={draft.to} onChange={(e) => setD("to", e.target.value)}
-            className="h-11 min-w-0 flex-1 rounded-md border border-input px-3 text-[14px]" />
+            className="h-11 min-w-0 flex-1 appearance-none rounded-md border border-input bg-background px-3 text-left text-[14px] leading-[42px] [&::-webkit-date-and-time-value]:text-left" />
         </div>
         <p className="mt-5 text-[13px] text-muted-foreground" id="payer-label">立替者</p>
         <div role="group" aria-labelledby="payer-label" className="mt-2 flex flex-wrap gap-2">

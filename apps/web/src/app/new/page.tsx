@@ -17,7 +17,8 @@ export default function NewGroupPage() {
   const [busy, setBusy] = useState(false);
   const [key] = useState(() => uuid());
 
-  useEffect(() => setMyName(loadDefaultName()), []);
+  // 保存した名前は、まだ何も入力していないときだけ入れる(読み込み中に入力した名前を消さない)
+  useEffect(() => setMyName((v) => v || loadDefaultName()), []);
 
   const names = members.map((m) => m.trim()).filter(Boolean);
   const ready = title.trim() !== "" && myName.trim() !== "";
