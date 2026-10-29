@@ -147,6 +147,7 @@ class RevisionOut(BaseModel):
     result: dict
     changed_by_me: bool
     created_at: str
+    changed_by_name: str | None = None  # このグループでの表示名(抜けた・退会した人は None)
 
 
 class ExpenseSearchOut(BaseModel):

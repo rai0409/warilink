@@ -1,5 +1,6 @@
 // FastAPI への薄いクライアント。金額計算はすべてサーバーが正本で、ここでは計算しない。
 import type { Schemas } from "@warilink/contracts";
+import { uuid } from "./uuid";
 
 export type Group = Schemas["GroupOut"];
 export type Member = Schemas["MemberOut"];
@@ -38,7 +39,7 @@ export async function api<T>(
   const method = init.method ?? "GET";
   const headers: Record<string, string> = { "X-WariLink-CSRF": "1" };
   if (init.body !== undefined) headers["Content-Type"] = "application/json";
-  if (method === "POST") headers["Idempotency-Key"] = init.idempotencyKey ?? crypto.randomUUID();
+  if (method === "POST") headers["Idempotency-Key"] = init.idempotencyKey ?? uuid();
   if (init.ifMatch !== undefined) headers["If-Match"] = String(init.ifMatch);
   let res: Response;
   try {
@@ -82,3 +83,5 @@ export type PayerDestination = Schemas["PayerDestinationOut"];
 
 export type ExpenseSearch = Schemas["ExpenseSearchOut"];
 export type GroupStats = Schemas["GroupStatsOut"];
+export type GroupSummary = Schemas["GroupSummaryOut"];
+export type InviteStatus = Schemas["InviteStatusOut"];

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ReceiptEditor } from "@/components/ReceiptEditor";
@@ -8,6 +7,7 @@ import { ReceiptUpload } from "@/components/ReceiptUpload";
 import { api, type Plans } from "@/lib/api";
 import { useGroup } from "@/lib/group-context";
 
+/** 商品別の支出を手で入力する(OCR を提供中なら、画像から読み取る入口も出す) */
 export default function ReceiptPage() {
   const { group } = useGroup();
   const router = useRouter();
@@ -18,21 +18,13 @@ export default function ReceiptPage() {
   }, []);
 
   return (
-    <>
-      {plans?.ocr_available && <section className="card" aria-labelledby="ocr-h">
-        <h2 id="ocr-h">レシート画像から読み取る</h2>
-        {plans && <ReceiptUpload publicId={group.public_id} available={plans.ocr_available} />}
-        <p className="muted">
-          画像は内容の確認のために保存し、一定期間後に削除します。撮影位置などの情報(EXIF)は保存しません。{" "}
-          <Link href="/pricing">料金プラン</Link>
-        </p>
-      </section>}
-      <ReceiptEditor
-        publicId={group.public_id}
-        members={group.members}
-        myMemberId={group.my_member_id}
-        onSaved={(id) => router.push(`/g/${group.public_id}/expenses/${id}`)}
-      />
-    </>
+    <ReceiptEditor
+      publicId={group.public_id}
+      members={group.members}
+      myMemberId={group.my_member_id}
+      backHref={`/g/${group.public_id}/expenses/new`}
+      header={plans?.ocr_available ? <ReceiptUpload publicId={group.public_id} available /> : undefined}
+      onSaved={(id) => router.push(`/g/${group.public_id}/expenses/${id}`)}
+    />
   );
 }

@@ -186,3 +186,22 @@ def confirm_received(transfer_id: str, db: Session = Depends(get_db), ident: Ide
     out = service.transfer_out(t)
     db.commit()
     return out
+
+
+@router.post("/settlements/{transfer_id}/not-received", response_model=TransferOut)
+def not_received(transfer_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    """受取人が「まだ受け取っていない」と記録する。送金の申告を取り消し、未送金に戻す(受取人だけ)。"""
+    require_feature("settlement_confirmations")
+    t, me = _load_transfer_for_party(db, transfer_id, ident, for_update=True)
+    require_open(db.get(Group, t.group_id))  # type: ignore[arg-type]
+    if me.id != t.to_member_id:
+        raise ApiError(403, "ACCESS_DENIED", "受け取っていないと記録できるのは受け取る本人だけです")
+    if t.status == "unpaid":
+        return service.transfer_out(t)  # 冪等
+    if t.status != "reported_paid":
+        raise ApiError(409, "TRANSFER_NOT_REPORTED", "この送金は申告中ではありません")
+    _transition(db, t, ident, "not_received", "unpaid")
+    db.flush()
+    out = service.transfer_out(t)
+    db.commit()
+    return out

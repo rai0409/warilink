@@ -204,7 +204,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * My Groups
+         * @description 自分が参加しているグループ(新しい順)。ホームの「最近のグループ」に使う。
+         */
+        get: operations["my_groups_api_v1_groups_get"];
         put?: never;
         /** Create Group */
         post: operations["create_group_api_v1_groups_post"];
@@ -310,6 +314,46 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/invites/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Invite Status
+         * @description 使える招待があるか(トークンは返さない。保存しているのはハッシュだけ)。
+         */
+        get: operations["invite_status_api_v1_groups__public_id__invites_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/groups/{public_id}/members/{member_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Rename Member
+         * @description 表示名を変える。自分の名前と、作成者なら名前だけのメンバー(未参加)の名前を変えられる。
+         */
+        patch: operations["rename_member_api_v1_groups__public_id__members__member_id__patch"];
         trace?: never;
     };
     "/api/v1/groups/{public_id}/owner": {
@@ -623,6 +667,26 @@ export interface paths {
          * @description 受取人による手動の受取確認。銀行による証明ではない。
          */
         post: operations["confirm_received_api_v1_settlements__transfer_id__confirm_received_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/settlements/{transfer_id}/not-received": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Not Received
+         * @description 受取人が「まだ受け取っていない」と記録する。送金の申告を取り消し、未送金に戻す(受取人だけ)。
+         */
+        post: operations["not_received_api_v1_settlements__transfer_id__not_received_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1260,6 +1324,19 @@ export interface components {
             /** Notes */
             notes: string[];
         };
+        /** GroupSummaryOut */
+        GroupSummaryOut: {
+            /** Public Id */
+            public_id: string;
+            /** Title */
+            title: string;
+            /** Member Count */
+            member_count: number;
+            /** Is Owner */
+            is_owner: boolean;
+            /** Closed */
+            closed: boolean;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1309,6 +1386,13 @@ export interface components {
         InviteRevokeOut: {
             /** Revoked */
             revoked: number;
+        };
+        /** InviteStatusOut */
+        InviteStatusOut: {
+            /** Active */
+            active: boolean;
+            /** Expires At */
+            expires_at: string | null;
         };
         /** IssueOut */
         IssueOut: {
@@ -1383,6 +1467,11 @@ export interface components {
             claimed: boolean;
             /** Is Me */
             is_me: boolean;
+        };
+        /** MemberRename */
+        MemberRename: {
+            /** Display Name */
+            display_name: string;
         };
         /** MemberStat */
         MemberStat: {
@@ -1650,6 +1739,8 @@ export interface components {
             changed_by_me: boolean;
             /** Created At */
             created_at: string;
+            /** Changed By Name */
+            changed_by_name?: string | null;
         };
         /** SessionStateOut */
         SessionStateOut: {
@@ -2091,6 +2182,26 @@ export interface operations {
             };
         };
     };
+    my_groups_api_v1_groups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupSummaryOut"][];
+                };
+            };
+        };
+    };
     create_group_api_v1_groups_post: {
         parameters: {
             query?: never;
@@ -2304,6 +2415,73 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    invite_status_api_v1_groups__public_id__invites_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_member_api_v1_groups__public_id__members__member_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                public_id: string;
+                member_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemberRename"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -2983,6 +3161,37 @@ export interface operations {
         };
     };
     confirm_received_api_v1_settlements__transfer_id__confirm_received_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                transfer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransferOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    not_received_api_v1_settlements__transfer_id__not_received_post: {
         parameters: {
             query?: never;
             header?: never;

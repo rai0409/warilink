@@ -1,53 +1,57 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { api, ensureGuest, errorMessage, type Group } from "@/lib/api";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { Ellipsis, UsersRound } from "lucide-react";
+import { Body, ButtonLink, List, Muted, Row, Screen, SectionTitle } from "@/components/kit";
+import { api, type Me } from "@/lib/api";
 
-export default function StartPage() {
-  const router = useRouter();
-  const [title, setTitle] = useState("");
-  const [myName, setMyName] = useState("");
-  const [others, setOthers] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [key] = useState(() => crypto.randomUUID());
+type GroupSummary = { public_id: string; title: string; member_count: number; is_owner: boolean; closed: boolean };
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await ensureGuest();
-      const names = others.split(/[\n,、]/).map((s) => s.trim()).filter(Boolean);
-      const g = await api<Group>("/groups", {
-        method: "POST",
-        idempotencyKey: key,
-        body: { title, my_name: myName, other_member_names: names },
-      });
-      router.push(`/g/${g.public_id}`);
-    } catch (err) {
-      setError(errorMessage(err));
-      setBusy(false);
-    }
-  }
+export default function HomePage() {
+  const [groups, setGroups] = useState<GroupSummary[] | null>(null);
+
+  useEffect(() => {
+    // セッションがまだ無い(初めての)ときは何も作らない。グループを作る・参加するときにゲストを作る
+    api<Me | null>("/identity/me")
+      .then((me) => (me ? api<GroupSummary[]>("/groups") : []))
+      .then(setGroups)
+      .catch(() => setGroups([]));
+  }, []);
 
   return (
-    <>
-      <h1>登録せずに割り勘を始める</h1>
-      <p className="muted">メールアドレスや電話番号は不要です。作成後に招待URLで参加してもらえます。</p>
-      <form className="card" onSubmit={submit}>
-        <label htmlFor="title">グループ名</label>
-        <input id="title" value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={100} />
-        <label htmlFor="me">あなたの名前</label>
-        <input id="me" value={myName} onChange={(e) => setMyName(e.target.value)} required maxLength={40} />
-        <label htmlFor="others">ほかのメンバー(カンマまたは改行区切り)</label>
-        <input id="others" value={others} onChange={(e) => setOthers(e.target.value)} placeholder="Bさん, Cさん" />
-        <p className="row" style={{ marginTop: 16 }}>
-          <button type="submit" disabled={busy}>グループを作成</button>
-        </p>
-        {error && <p className="error" role="alert">{error}</p>}
-      </form>
-    </>
+    <Screen>
+      <header className="flex items-center justify-between px-6 pt-6">
+        <span className="text-[22px] font-semibold tracking-tight">WariLink</span>
+        <Link href="/settings" aria-label="設定" className="grid size-11 place-items-center text-foreground">
+          <Ellipsis className="size-5" aria-hidden />
+        </Link>
+      </header>
+      <Body className="flex flex-col">
+        <div className="mt-24 space-y-2">
+          <ButtonLink href="/new">グループを作る</ButtonLink>
+          <Link href="/join" className="flex min-h-11 items-center justify-center text-[14px] font-medium no-underline">
+            招待リンクから参加
+          </Link>
+        </div>
+        {groups && groups.length > 0 && (
+          <>
+            <SectionTitle className="mt-10">最近のグループ</SectionTitle>
+            <List aria-label="最近のグループ">
+              {groups.map((g) => (
+                <Row
+                  key={g.public_id}
+                  href={`/g/${g.public_id}`}
+                  icon={<UsersRound strokeWidth={1.6} />}
+                  label={g.title}
+                  sub={`${g.member_count}人${g.closed ? " · 終了" : ""}`}
+                />
+              ))}
+            </List>
+          </>
+        )}
+        <Muted className="mt-auto pt-16">登録不要で使えます</Muted>
+      </Body>
+    </Screen>
   );
 }

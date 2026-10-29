@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { createGroup, newUser, openTab } from "./helpers";
+import { addExpense, createGroup, newUser } from "./helpers";
 
 // Chromium の仮想認証器(CDP WebAuthn)で Passkey を作り、別の端末(別のブラウザコンテキスト)へ同じ Passkey を移してログインする。
 // 実在の認証器・外部サービスは使わない。
@@ -24,11 +24,7 @@ async function virtualAuthenticator(page: Page) {
 test("ゲストのまま使い始め、Passkey を登録して別の端末からログインすると同じグループに入れる", async ({ browser, baseURL }) => {
   const a = await newUser(browser, { baseURL });
   await createGroup(a, "Passkey旅行", "Bさん");
-  await openTab(a, "支出を追加");
-  await a.getByLabel("内容").fill("ホテル");
-  await a.getByLabel("金額(円)").fill("12,000");
-  await a.getByRole("button", { name: "この内容で登録" }).click();
-  await expect(a.getByRole("list", { name: "支出" })).toContainText("ホテル");
+  await addExpense(a, "ホテル", "12,000");
   const groupUrl = a.url();
 
   // 端末 A: ゲストから Passkey を登録(任意)
@@ -81,7 +77,7 @@ test("Passkey を作れない端末では、日本語で理由を表示して状
   });
   await a.goto("/account");
   await a.getByRole("button", { name: "Passkey を登録する" }).click();
-  const err = a.locator("p.error[role=alert]");
+  const err = a.getByRole("alert").filter({ hasText: /\S/ });
   await expect(err).toContainText(/取り消され|時間切れ|使えません|登録されています/, { timeout: 30_000 });
   await expect(err).not.toContainText(/Error|webauthn|NotAllowed/i); // 技術的な文字列は出さない
   await expect(a.getByText("ゲスト(登録なし)")).toBeVisible();

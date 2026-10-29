@@ -1,8 +1,8 @@
-const yen = new Intl.NumberFormat("ja-JP");
+const jaNumber = new Intl.NumberFormat("ja-JP");
 
 export function formatYen(minor: number): string {
   if (!Number.isSafeInteger(minor)) return "—";
-  return `${minor < 0 ? "−" : ""}${yen.format(Math.abs(minor))}円`;
+  return `${minor < 0 ? "−" : ""}${jaNumber.format(Math.abs(minor))}円`;
 }
 
 /** 入力欄の文字列を整数円に。全角数字・カンマを許容し、整数以外は null。 */
@@ -75,4 +75,10 @@ export const CATEGORY_LABEL: Record<string, string> = {
 
 export function categoryLabel(c: string | null | undefined): string {
   return c ? (CATEGORY_LABEL[c] ?? c) : "未分類";
+}
+
+/** UI v2 の金額表示(¥24,000 / −¥240)。サーバーの整数円をそのまま表示する */
+export function yen(minor: number): string {
+  if (!Number.isSafeInteger(minor)) return "—";
+  return `${minor < 0 ? "−" : ""}¥${jaNumber.format(Math.abs(minor))}`;
 }

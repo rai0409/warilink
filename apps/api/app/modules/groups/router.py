@@ -52,6 +52,23 @@ class GroupOut(BaseModel):
     members: list[MemberOut]
 
 
+class GroupSummaryOut(BaseModel):
+    public_id: str
+    title: str
+    member_count: int
+    is_owner: bool
+    closed: bool
+
+
+class InviteStatusOut(BaseModel):
+    active: bool  # 使える招待が 1 つ以上ある
+    expires_at: str | None  # 使える招待のうち、いちばん遅い期限
+
+
+class MemberRename(BaseModel):
+    display_name: Name
+
+
 class GroupCreate(BaseModel):
     title: Title
     my_name: Name
@@ -133,6 +150,22 @@ def create_group(body: GroupCreate, request: Request, db: Session = Depends(get_
         return group_out(db, group, me)
 
     return run_idempotent(db, request, ident, "group.create", body, do, status_code=201)
+
+
+@router.get("/groups", response_model=list[GroupSummaryOut])
+def my_groups(db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    """自分が参加しているグループ(新しい順)。ホームの「最近のグループ」に使う。"""
+    rows = db.execute(
+        select(Group, Membership.role).join(Membership, Membership.group_id == Group.id)
+        .where(Membership.identity_id == ident.id, Membership.status == "active")
+        .order_by(Group.created_at.desc())
+    ).all()
+    counts = dict(db.execute(
+        select(Membership.group_id, func.count()).where(
+            Membership.group_id.in_([g.id for g, _ in rows]), Membership.status == "active")
+        .group_by(Membership.group_id)).all()) if rows else {}
+    return [GroupSummaryOut(public_id=g.public_id, title=g.title, member_count=counts.get(g.id, 0),
+                            is_owner=role == "owner", closed=g.closed_at is not None) for g, role in rows]
 
 
 @router.get("/groups/{public_id}", response_model=GroupOut)
@@ -221,6 +254,39 @@ def leave_group(public_id: str, db: Session = Depends(get_db), ident: Identity =
     db.add(AuditEvent(actor_identity_id=ident.id, action="group.leave", target_type="group",
                       target_id=str(acc.group.id), safe_metadata={}))
     db.commit()
+
+
+@router.get("/groups/{public_id}/invites/status", response_model=InviteStatusOut)
+def invite_status(public_id: str, db: Session = Depends(get_db), ident: Identity = Depends(current_identity)):
+    """使える招待があるか(トークンは返さない。保存しているのはハッシュだけ)。"""
+    acc = load_group_access(db, public_id, ident)
+    latest = db.execute(select(func.max(Invitation.expires_at)).where(
+        Invitation.group_id == acc.group.id, Invitation.revoked_at.is_(None), Invitation.expires_at > now(),
+        Invitation.uses < Invitation.max_uses)).scalar_one()
+    return InviteStatusOut(active=latest is not None, expires_at=latest.isoformat() if latest else None)
+
+
+@router.patch("/groups/{public_id}/members/{member_id}", response_model=GroupOut)
+def rename_member(public_id: str, member_id: str, body: MemberRename, db: Session = Depends(get_db),
+                  ident: Identity = Depends(current_identity)):
+    """表示名を変える。自分の名前と、作成者なら名前だけのメンバー(未参加)の名前を変えられる。"""
+    require_feature("groups")
+    acc = load_group_access(db, public_id, ident, for_update=True)
+    require_open(acc.group)
+    target = db.execute(select(Membership).where(
+        Membership.id == parse_uuid(member_id), Membership.group_id == acc.group.id,
+        Membership.status == "active")).scalar_one_or_none()
+    if target is None:
+        raise not_found()
+    if not (target.id == acc.member.id or (acc.is_owner and target.identity_id is None)):
+        raise ApiError(403, "ACCESS_DENIED", "変更できるのは自分の名前と、作成者による未参加のメンバーの名前だけです")
+    target.display_name = body.display_name
+    db.add(AuditEvent(actor_identity_id=ident.id, action="group.members.rename", target_type="group",
+                      target_id=str(acc.group.id), safe_metadata={}))
+    db.flush()
+    out = group_out(db, acc.group, acc.member)
+    db.commit()
+    return out
 
 
 class OwnerTransferIn(BaseModel):
