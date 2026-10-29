@@ -5,6 +5,8 @@ const apiOrigin = process.env.API_ORIGIN ?? "http://localhost:8000";
 const nextConfig: NextConfig = {
   output: "standalone",
   outputFileTracingRoot: new URL("../../", import.meta.url).pathname,
+  // 開発時の左下のボタンが、スマホ幅で画面下の主ボタン・シートのボタンに重なるため出さない
+  devIndicators: false,
   // API を同一オリジンに見せ、Cookie を SameSite=Lax のまま使う
   async rewrites() {
     return [{ source: "/api/v1/:path*", destination: `${apiOrigin}/api/v1/:path*` }];

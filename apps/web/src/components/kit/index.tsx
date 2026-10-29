@@ -82,7 +82,7 @@ export function BottomBar({ children, className }: { children: React.ReactNode; 
 
 // ---------------------------------------------------------------- ボタン
 
-const BTN = "inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg px-4 text-[15px] font-semibold transition-colors disabled:cursor-not-allowed";
+const BTN = "inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg px-4 text-[15px] font-semibold disabled:cursor-not-allowed";
 
 export function PrimaryButton({ className, ...props }: React.ComponentProps<"button">) {
   return (

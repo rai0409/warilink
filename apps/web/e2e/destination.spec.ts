@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { createGroup, newUser, openTab } from "./helpers";
+import { addExpense, createGroup, createInvite, groupHome, joinAs, newUser, openTab } from "./helpers";
 
 // 受取人が Passkey 登録 → 振込先を暗号化保存・共有 → 支払者だけに表示 → 受取人が変更すると支払者に警告。
 // 送金は実行しない(表示とコピーのみ)。口座情報は架空の値。
@@ -26,9 +26,8 @@ async function fillBank(page: Page, number: string, branch: string) {
 test("受取人が共有した振込先を、支払者だけが確認でき、変更されると警告が出る", async ({ browser, baseURL }) => {
   const a = await newUser(browser, { baseURL });
   await createGroup(a, "口座テスト", "Bさん");
-  const groupUrl = a.url();
-  await a.getByRole("button", { name: "招待URLを作成" }).click();
-  const inviteUrl = await a.getByLabel(/招待URL/).inputValue();
+  const home = groupHome(a);
+  const inviteUrl = await createInvite(a);
 
   // A: Passkey 登録 → 振込先を保存(共有を許可)
   await passkeyDevice(a);
@@ -46,26 +45,23 @@ test("受取人が共有した振込先を、支払者だけが確認でき、�
 
   // B が参加。A が立替、精算を確定
   const b = await newUser(browser, { baseURL });
-  await b.goto(inviteUrl);
-  await b.getByRole("button", { name: "Bさん" }).click();
-  await a.goto(groupUrl);
-  await openTab(a, "支出を追加");
-  await a.getByLabel("内容").fill("宿");
-  await a.getByLabel("金額(円)").fill("8,000");
-  await a.getByRole("button", { name: "この内容で登録" }).click();
-  await expect(a.getByRole("list", { name: "支出" })).toContainText("宿");
+  await joinAs(b, inviteUrl, "Bさん", "口座テスト");
+  await a.goto(home);
+  await addExpense(a, "宿", "8,000");
   await openTab(a, "精算");
-  await a.getByRole("button", { name: "この精算案で確定" }).click();
-  // 受取人 A 自身の行には振込先の表示ボタンは出ない
-  const aRow = a.getByRole("list", { name: "確定した精算" }).locator("li.transfer").first();
-  await expect(aRow.getByRole("button", { name: "振込先を表示" })).toHaveCount(0);
+  await a.getByRole("button", { name: "精算案を確定" }).click();
+  // 受取人 A 自身の画面には振込先の表示ボタンは出ない
+  await a.getByRole("list", { name: "確定した精算" }).getByRole("link").first().click();
+  await expect(a.getByRole("heading", { name: "受け取りの確認" })).toBeVisible();
+  await expect(a.getByRole("button", { name: "振込先を表示" })).toHaveCount(0);
 
   // B(支払者)だけが表示できる
-  await b.goto(groupUrl);
-  await openTab(b, "精算");
-  const bRow = b.getByRole("list", { name: "確定した精算" }).locator("li.transfer").filter({ hasText: "Bさん → Aさん" });
-  await bRow.getByRole("button", { name: "振込先を表示" }).click();
-  const view = bRow.getByLabel("振込先");
+  await b.goto(`${home}/settle`);
+  await b.getByRole("list", { name: "確定した精算" }).getByRole("link").filter({ hasText: "あなた" }).click();
+  await expect(b.getByRole("heading", { name: "送金の記録" })).toBeVisible();
+  const transferUrl = b.url();
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  const view = b.getByLabel("振込先", { exact: true });
   await expect(view).toContainText("1234567");
   await expect(view).toContainText("テスト タロウ");
   await expect(view).toContainText("照合コード");
@@ -77,30 +73,29 @@ test("受取人が共有した振込先を、支払者だけが確認でき、�
   await fillBank(a, "7654321", "駅前");
   await a.getByRole("button", { name: "この内容で変更" }).click();
   await expect(a.getByRole("status").filter({ hasText: "振込先を変更しました" })).toBeVisible();
-  await b.reload();
-  await bRow.getByRole("button", { name: "振込先を表示" }).click();
-  await expect(bRow.getByRole("alert")).toContainText("受取人が振込先を変更しました");
-  await expect(bRow.getByRole("alert")).toContainText("***4567");
-  await expect(bRow.getByLabel("振込先")).toContainText("7654321");
+  await b.goto(transferUrl);
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  const warn = b.getByRole("alert").filter({ hasText: /\S/ });
+  await expect(warn).toContainText("受取人が振込先を変更しました");
+  await expect(warn).toContainText("***4567");
+  await expect(b.getByLabel("振込先", { exact: true })).toContainText("7654321");
 
   // 共有を取り消すと表示されない
   await a.reload();
   await a.getByLabel("あなたに支払う精算の相手に表示する").click(); // 保存してから表示が切り替わる
   await expect(a.getByRole("status").filter({ hasText: "取り消しました" })).toBeVisible();
   await b.reload();
-  await bRow.getByRole("button", { name: "振込先を表示" }).click();
-  await expect(bRow).toContainText("受取人は振込先を共有していません");
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  await expect(b.getByText("受取人は振込先を共有していません")).toBeVisible();
 
-  // 削除は元に戻せないことを確認してから行う。取り消せば何も変わらない
+  // 削除は元に戻せないことを確認してから行う。キャンセルすれば何も変わらない
   await a.reload();
-  a.once("dialog", (d) => d.dismiss());
   await a.getByRole("button", { name: "削除する", exact: true }).click();
-  await expect(a.getByRole("status").filter({ hasText: "削除を取り消しました" })).toBeVisible();
+  const dialog = a.getByRole("dialog", { name: "振込先を削除しますか?" });
+  await expect(dialog).toContainText("元に戻せません");
+  await dialog.getByRole("button", { name: "キャンセル" }).click();
   await expect(a.getByText(/\*\*\*4321/)).toBeVisible();
-  a.once("dialog", (d) => {
-    expect(d.message()).toContain("元に戻せません");
-    d.accept();
-  });
   await a.getByRole("button", { name: "削除する", exact: true }).click();
+  await dialog.getByRole("button", { name: "削除する" }).click();
   await expect(a.getByRole("status").filter({ hasText: "振込先を削除しました" })).toBeVisible();
 });

@@ -255,7 +255,8 @@ export function ReceiptEditor({
   function openAssign() {
     const first = items.find((x) => bulk.has(x.id));
     setAssignMode(bulk.size === 1 && first ? first.mode : "equal");
-    setAssignMembers(new Set(first?.mode === "equal" ? first.members : allIds));
+    // 未割当の商品は全員を選んだ状態から始める
+    setAssignMembers(new Set(first?.mode === "equal" && first.members.length > 0 ? first.members : allIds));
     setAssignValues(bulk.size === 1 && first ? { ...first.values } : {});
     setPanel("assign");
   }
@@ -378,10 +379,10 @@ export function ReceiptEditor({
                 {/(ドリンク|ビール|茶|酒|ジュース|コーヒー|ハイボール)/.test(it.name)
                   ? <CupSoda aria-hidden className="size-5 shrink-0" strokeWidth={1.6} />
                   : <Utensils aria-hidden className="size-5 shrink-0" strokeWidth={1.6} />}
-                <button type="button" aria-label={`${label}を編集`} onClick={() => { setEditItemId(it.id); setPanel("item"); }}
+                <button type="button" onClick={() => { setEditItemId(it.id); setPanel("item"); }}
                   className="flex min-h-16 min-w-0 flex-1 items-center gap-2 text-left">
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-medium">{label}</span>
+                    <span className="block truncate text-[14px] font-medium">{label}<span className="sr-only">を編集</span></span>
                     <span className={`block truncate text-[12px] ${flagged || review?.[it.id] ? "text-warning" : "text-muted-foreground"}`}>
                       {review?.[it.id] ? "要確認 · " : ""}{itemSub(it)}
                     </span>
