@@ -227,3 +227,72 @@ def test_parser_version_bumped_and_existing_keys_kept():
         assert k in d
     assert {"id", "name", "quantity", "line_minor", "tax_group", "confidence", "needs_review", "reasons", "bbox",
             "source_lines"} <= set(d["items"][0])
+
+
+# ---------------------------------------------------------------- 軽減税率の凡例(内税で税の行が無い場合)
+
+def test_reduced_legend_without_tax_lines_marks_unmarked_items_as_10():
+    d = parse_receipt(tokens_from_lines([
+        "スーパー", ("牛乳※", "¥216"), ("洗剤", "¥440"), ("合計", "¥656"), "(内消費税等 ¥56)",
+        ("お預り", "¥1,000"), ("お釣り", "¥344"), "※は軽減税率対象商品",
+    ]))
+    assert d.tax_mode == "inclusive"
+    assert items_of(d) == [("牛乳", 1, 216, "8"), ("洗剤", 1, 440, "10")]
+
+
+def test_reduced_legend_wording_variants():
+    for legend in ("※印は軽減税率適用商品です", "軽減税率対象品には※を表示", "*は軽減税率(8%)対象"):
+        d = parse_receipt(tokens_from_lines([
+            "店", ("パン※", "¥108"), ("電池", "¥330"), ("合計", "¥438"), legend,
+        ]))
+        assert [i.tax_group for i in d.items] == ["8", "10"], legend
+
+
+def test_reduced_mark_without_legend_or_tax_lines_keeps_unmarked_unknown():
+    d = parse_receipt(tokens_from_lines(["店", ("パン※", "¥108"), ("電池", "¥330"), ("合計", "¥438")]))
+    assert [i.tax_group for i in d.items] == ["8", None]
+
+
+def test_legend_alone_does_not_assign_10_when_no_item_is_marked():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("パン", "¥108"), ("電池", "¥330"), ("合計", "¥438"), "※は軽減税率対象商品",
+    ]))
+    assert [i.tax_group for i in d.items] == [None, None]
+
+
+# ---------------------------------------------------------------- 記号を読めなかった場合(OCR は「※」を落としやすい)
+
+def test_unread_marks_inferred_from_printed_8_and_10_taxes_and_flagged():
+    d = parse_receipt(tokens_from_lines([
+        "居酒屋", ("焼き鳥盛合せ 3個", "¥2,160"), ("ハイボール", "¥1,160"), ("緑茶 2個", "¥880"), ("小計", "¥4,200"),
+        ("消費税(8%)", "¥243"), ("消費税(10%)", "¥116"), ("合計", "¥4,559"), "は軽減税率対象商品",
+    ]))
+    assert [i.tax_group for i in d.items] == ["8", "10", "8"]
+    assert all(i.needs_review and "TAX_GROUP_INFERRED" in i.reasons for i in d.items)
+    assert "TAX_GROUP_INFERRED" in codes(d) and d.difference_minor == 0
+
+
+def test_ambiguous_tax_inference_leaves_groups_unknown():
+    # 100 円の商品が 2 つあり、どちらが 8% か決められない
+    d = parse_receipt(tokens_from_lines([
+        "店", ("パン", "¥100"), ("牛乳", "¥100"), ("小計", "¥200"),
+        ("消費税(8%)", "¥8"), ("消費税(10%)", "¥10"), ("合計", "¥218"), "は軽減税率対象商品",
+    ]))
+    assert [i.tax_group for i in d.items] == [None, None]
+    assert "TAX_GROUP_INFERRED" not in codes(d) and "TAX_MARK_UNREADABLE" in codes(d)
+
+
+def test_no_inference_when_a_discount_changes_the_tax_base():
+    d = parse_receipt(tokens_from_lines([
+        "店", ("パン", "¥300"), ("洗剤", "¥500"), ("小計", "¥800"), ("値引", "-¥100"),
+        ("消費税(8%)", "¥24"), ("消費税(10%)", "¥40"), ("合計", "¥764"),
+    ]))
+    assert [i.tax_group for i in d.items] == [None, None]
+
+
+def test_inclusive_receipt_with_unreadable_marks_warns():
+    d = parse_receipt(tokens_from_lines([
+        "スーパー", ("バナナ", "¥216"), ("洗剤", "¥440"), ("合計", "¥656"), "(内消費税等 ¥56)", "は軽減税率対象商品",
+    ]))
+    assert [i.tax_group for i in d.items] == [None, None]
+    assert "TAX_MARK_UNREADABLE" in codes(d)
