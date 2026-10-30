@@ -13,7 +13,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-GENERATOR_VERSION = "synth-0.1.0"
+GENERATOR_VERSION = "synth-0.2.0"
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Debian/Ubuntu fonts-noto-cjk (OFL-1.1)
@@ -38,6 +38,22 @@ def yen(v: int) -> str:
     return f"-¥{-v:,}" if v < 0 else f"¥{v:,}"
 
 
+def bare(v: int) -> str:
+    """¥ を印字しないレシートの金額(桁区切りだけ)。"""
+    return f"-{-v:,}" if v < 0 else f"{v:,}"
+
+
+# 実レシートのヘッダーにある、金額ではない数字(架空の住所・番号)
+def header_noise(rng: random.Random) -> list[tuple[str, str]]:
+    lines = [(f"東京都架空区見本町{rng.randint(1, 9)}-{rng.randint(1, 30)}-{rng.randint(1, 20)}", ""),
+             (f"TEL 03-{rng.randint(1000, 9999)}-{rng.randint(1000, 9999)}", "")]
+    if rng.random() < 0.6:
+        lines.append((f"店舗# {rng.randint(100, 9999)} 端末# {rng.randint(1, 99)}", ""))
+    if rng.random() < 0.5:
+        lines.append((f"登録番号 T{rng.randint(10**12, 10**13 - 1)}", ""))
+    return lines
+
+
 @dataclass
 class Sample:
     lines: list[tuple[str, str]]  # (左, 右)
@@ -48,10 +64,14 @@ def make_sample(rng: random.Random) -> Sample:
     tax_mode = rng.choice(["exclusive", "inclusive"])
     reduced = rng.random() < 0.4  # 8% と 10% の混在
     layout = rng.choice(["inline", "two_line"])
+    style = "bare" if rng.random() < 0.3 else "yen"  # ¥ を印字しないレシート
+    money = bare if style == "bare" else yen
     items: list[dict[str, Any]] = []
-    lines: list[tuple[str, str]] = [(rng.choice(STORES), ""),
-                                    (f"2026年{rng.randint(1, 12)}月{rng.randint(1, 28)}日 {rng.randint(10, 22)}:"
-                                     f"{rng.randint(0, 59):02d}", ""), ("", "")]
+    lines: list[tuple[str, str]] = [(rng.choice(STORES), "")]
+    if rng.random() < 0.7:
+        lines += header_noise(rng)
+    lines += [(f"2026年{rng.randint(1, 12)}月{rng.randint(1, 28)}日 {rng.randint(10, 22)}:"
+               f"{rng.randint(0, 59):02d}", ""), ("", "")]
     for name in rng.sample(ITEMS, rng.randint(2, 7)):
         qty = rng.choice([1, 1, 1, 2, 3])
         unit = rng.randrange(100, 1500, 10)
@@ -60,11 +80,11 @@ def make_sample(rng: random.Random) -> Sample:
         amount = unit * qty
         if layout == "two_line" and qty > 1:
             lines.append((f"{name}{mark}", ""))
-            lines.append((f"  @{unit:,} x{qty}", yen(amount)))
+            lines.append((f"  @{unit:,} x{qty}", money(amount)))
         elif qty > 1:
-            lines.append((f"{name}{mark} {qty}個", yen(amount)))
+            lines.append((f"{name}{mark} {qty}個", money(amount)))
         else:
-            lines.append((f"{name}{mark}", yen(amount)))
+            lines.append((f"{name}{mark}", money(amount)))
         items.append({"name": name, "quantity": qty, "line_minor": amount, "tax_group": tg})
     adjustments: list[dict[str, Any]] = []
     s8 = sum(i["line_minor"] for i in items if i["tax_group"] == "8")
@@ -72,30 +92,33 @@ def make_sample(rng: random.Random) -> Sample:
     lines.append(("", ""))
     subtotal = s8 + s10
     if tax_mode == "exclusive":
-        lines.append(("小計", yen(subtotal)))
+        lines.append(("小計", money(subtotal)))
         tax8, tax10 = s8 * 8 // 100, s10 * 10 // 100
         if s8:
-            lines.append(("消費税(8%)", yen(tax8)))
+            lines.append(("消費税(8%)", money(tax8)))
             adjustments.append({"kind": "tax", "amount_minor": tax8})
-        lines.append(("消費税(10%)", yen(tax10)))
+        lines.append(("消費税(10%)", money(tax10)))
         adjustments.append({"kind": "tax", "amount_minor": tax10})
         total = subtotal + tax8 + tax10
     else:
         total = subtotal
         if rng.random() < 0.4:
             d = -rng.randrange(50, 300, 10)
-            lines.append(("値引", yen(d)))
+            lines.append(("値引", money(d)))
             adjustments.append({"kind": "discount", "amount_minor": d})
             total += d
-    lines.append(("合計", yen(total)))
+    lines.append(("合計", money(total)))
     if tax_mode == "inclusive":
-        lines.append((f"(内消費税等 {yen(total * 10 // 110)})", ""))
-    paid = ((total // 1000) + 1) * 1000
-    lines += [("お預り", yen(paid)), ("お釣り", yen(paid - total))]
+        lines.append((f"(内消費税等 {money(total * 10 // 110)})", ""))
+    if rng.random() < 0.5:
+        paid = ((total // 1000) + 1) * 1000
+        lines += [("お預り", money(paid)), ("お釣り", money(paid - total))]
+    else:
+        lines.append((rng.choice(["QUICPay", "iD", "交通系IC", "VISA", "PayPay"]), money(total)))
     if reduced:
         lines.append(("※は軽減税率対象商品", ""))
     label = {"label_status": "synthetic", "generator": GENERATOR_VERSION, "items": items, "adjustments": adjustments,
-             "total_minor": total, "tax_mode": tax_mode}
+             "total_minor": total, "tax_mode": tax_mode, "price_style": style}
     return Sample(lines, label)
 
 

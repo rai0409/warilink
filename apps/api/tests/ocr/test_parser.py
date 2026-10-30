@@ -296,3 +296,53 @@ def test_inclusive_receipt_with_unreadable_marks_warns():
     ]))
     assert [i.tax_group for i in d.items] == [None, None]
     assert "TAX_MARK_UNREADABLE" in codes(d)
+
+
+# ---------------------------------------------------------------- rule-ja-0.3.0: 商品以外の数字を拾わない
+# 実レシート(つけめん店、2026-10-30)で、店名の誤読・住所・店舗番号/端末番号が商品や値引になった並びを、
+# 架空の店名・住所で再現する。
+
+
+def _yen_style_with_header_noise(store="ラーメンTE1SU駅前店"):
+    return tokens_from_lines([
+        store, "東京都架空区架空町1-2-3", "TEL 03-0000-0000", "登録番号 T1234567890123", "領収証",
+        "店舗# 1234 端末# 41", "2026/10/25(日) 22:07", ("特製つけめん", "¥1,590"), ("辛くする", "¥150"),
+        "来店はじめて", ("合計", "¥1,740"), ("QUICPay", "¥1,740"), "(税率10% 対象額 ¥1,740)", "(内消費税等 10% ¥158)",
+    ])
+
+
+def test_header_numbers_are_not_items():
+    d = parse_receipt(_yen_style_with_header_noise())
+    assert items_of(d) == [("特製つけめん", 1, 1590, None), ("辛くする", 1, 150, None)]
+    assert d.adjustments == []  # 住所の「1-2-3」を値引にしない
+    assert d.store_name == "ラーメンTE1SU駅前店"  # 誤読で数字が入った店名も金額にしない
+    assert d.total_minor == 1740 and d.difference_minor == 0 and d.tax_mode == "inclusive"
+    assert d.warnings == []  # 電子マネーの行は支払(合計の後の商品として警告しない)
+
+
+def test_yen_style_receipt_ignores_bare_numbers_in_body():
+    d = parse_receipt(tokens_from_lines([
+        "居酒屋", ("お通し", "¥300"), "テーブル 12", ("生ビール", "¥550"), ("合計", "¥850"),
+    ]))
+    assert items_of(d) == [("お通し", 1, 300, None), ("生ビール", 1, 550, None)]
+    assert any(ln.get("bare_amount_ignored") for ln in d.lines)
+
+
+def test_bare_style_receipt_still_reads_prices_but_needs_review():
+    d = parse_receipt(tokens_from_lines(["スーパー", ("牛乳", "198"), ("食パン", "120"), ("合計", "318")]))
+    assert items_of(d) == [("牛乳", 1, 198, None), ("食パン", 1, 120, None)]
+    assert all("BARE_AMOUNT" in i.reasons and i.needs_review for i in d.items)
+    assert d.difference_minor == 0
+
+
+def test_thousands_separator_alone_does_not_make_a_yen_style_receipt():
+    # ¥ を印字しないレシートでも 1,000 円以上は桁区切りが付く。198 円の商品を落とさない
+    d = parse_receipt(tokens_from_lines(["スーパー", ("お米", "1,980"), ("牛乳", "198"), ("合計", "2,178")]))
+    assert items_of(d) == [("お米", 1, 1980, None), ("牛乳", 1, 198, None)]
+    assert d.difference_minor == 0
+
+
+def test_hyphen_after_digits_is_not_a_minus_sign():
+    assert find_amount("東京都架空区1-2-3").value == 3
+    assert find_amount("値引 -50").value == -50
+    assert find_amount("ポテト ▲30").value == -30
