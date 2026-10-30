@@ -17,7 +17,7 @@ from typing import Any
 from app.ocr.tokens import OcrToken
 
 # 0.2.0: 途中の合計で止めない(全行から合計の候補を集める)・ポイントの付与/利用/充当の区別・返品・印字点数の照合
-PARSER_VERSION = "rule-ja-0.2.1"
+PARSER_VERSION = "rule-ja-0.3.0"
 LOW_CONFIDENCE = 0.90
 
 # ---------------------------------------------------------------- 正規化・行の組み立て
@@ -67,9 +67,12 @@ def group_lines(tokens: list[OcrToken]) -> list[Line]:
 
 # ---------------------------------------------------------------- 金額・数量
 
+# 負号は、直前が英数字でないときだけ(住所「2-1-1」・電話番号のハイフンを負号にしない)
 _MONEY = re.compile(
-    r"(?P<neg>[-−‐▲△])?\s*(?P<yen>¥)?\s*(?P<num>\d{1,3}(?:,\d{3})+|\d+)(?P<unit>\s*円)?(?P<mark>\s*[※*軽])?"
+    r"(?:(?<![0-9A-Za-z])(?P<neg>[-−‐▲△]))?\s*(?P<yen>¥)?\s*(?P<num>\d{1,3}(?:,\d{3})+|\d+)(?P<unit>\s*円)?"
+    r"(?P<mark>\s*[※*軽])?"
 )
+_ALNUM = re.compile(r"[0-9A-Za-z]")
 _QTY_PATTERNS = [
     re.compile(r"[@＠]\s*¥?\s*(?P<unit>\d{1,3}(?:,\d{3})+|\d+)\s*[x×X*]\s*(?P<qty>\d{1,3})"),
     re.compile(r"(?P<qty>\d{1,3})\s*(?:個|点|コ|ケ|本|杯|枚|皿|人前|袋|パック)\s*[x×X*]?\s*(?:[@＠]?\s*¥?\s*(?P<unit>\d{1,3}(?:,\d{3})+|\d+))?"),
@@ -90,6 +93,7 @@ class Money:
     start: int
     explicit: bool  # ¥・円・桁区切りのいずれかがあり、金額らしい
     reduced_mark: bool
+    yen_marked: bool = False  # ¥ または 円 が付いている(桁区切りだけでは付けない)
 
 
 def find_amount(text: str) -> Money | None:
@@ -98,10 +102,17 @@ def find_amount(text: str) -> Money | None:
     for m in _MONEY.finditer(text):
         num = m.group("num")
         explicit = bool(m.group("yen") or m.group("unit") or "," in num)
+        if not explicit:
+            # 店名の誤読(「TE1SU」)・登録番号(「T630…」)など、英数字に挟まれた数字は金額ではない
+            before = text[m.start("num") - 1] if m.start("num") > 0 else ""
+            after = text[m.end("num")] if m.end("num") < len(text) else ""
+            if (before and _ALNUM.match(before)) or (after and _ALNUM.match(after)):
+                continue
         value = _to_int(num)
         if m.group("neg"):
             value = -value  # 長音記号「ー」は商品名(コーヒー等)と区別できないため負号として扱わない
-        candidates.append(Money(value, m.start(), explicit, bool(m.group("mark"))))
+        candidates.append(Money(value, m.start(), explicit, bool(m.group("mark")),
+                                bool(m.group("yen") or m.group("unit"))))
     if not candidates:
         return None
     explicit_ones = [c for c in candidates if c.explicit]
@@ -162,10 +173,15 @@ _KEYWORDS: list[tuple[str, re.Pattern[str]]] = [
     # ポイント: 利用・充当(金額が動く)を先に判定し、付与・残高などはそのあと無視する
     ("points_used", re.compile(r"ポイント.*(?:利用|使用|充当|払|値引|割引)|(?:利用|使用)\s*(?:ポイント|P\b)")),
     ("ignore", re.compile(r"ポイント|担当|レジ|登録番号|TEL|電話|〒|https?|領収|対象|\d{1,2}:\d{2}|"
-                          r"内訳|伝票|No\.|ありがとう", re.I)),
+                          r"内訳|伝票|No\.|ありがとう|"
+                          # 店舗・端末・取引などの番号(「店舖」は OCR の字体違い)
+                          r"#|端末|店[舗舖]\s*(?:No|番号|#|\d)|取引|会員|承認|レシート\s*No|"
+                          # 住所(都道府県・市区町村のあとに「番地-番地」)
+                          r"[都道府県市区町村]\S*?\d+\s*[-−‐ー]\s*\d+|丁目|番地", re.I)),
     # 支払手段・預り・釣銭(合計より後に来る。ここより後の行は明細にしない)
     ("payment", re.compile(r"お?預[りか]|お?釣|釣銭|現計|現金|クレジット|カード|電子マネー|交通系|paypay|QR|"
-                           r"支払方法", re.I)),
+                           r"支払方法|quicpay|suica|pasmo|icoca|nanaco|waon|edy|d払い|au\s*pay|メルペイ|楽天ペイ|"
+                           r"apple\s*pay|google\s*pay|visa|master|jcb|amex|diners|(?-i:\biD\b)", re.I)),
     ("count", re.compile(r"点数|(?<![\d,])\d{1,3}\s*点\s*$")),
     ("refund", re.compile(r"返品|返金|取消")),
     ("subtotal", re.compile(r"小\s*計|税抜\s*合計")),
@@ -286,8 +302,26 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
     points_as_payment = False
     after_payment_lines: list[int] = []
 
+    # レシートの書式: 商品らしい行に ¥ か 円 の付いた金額が 1 つでもあれば「¥ 付きの書式」。
+    # その場合、¥ も円も無い数字(店舗番号・端末番号など)は商品・値引の金額にしない。
+    # 桁区切り(1,280)だけでは判定しない(¥ を印字しないレシートにも桁区切りはあるため)。
+    # ヘッダー(日付の行、または最初の ¥ 付きの商品より上)では、書式に関係なく裸の数字を金額にしない。
+    yen_style = False
+    header_end: int | None = None
+    for ln in lines:
+        a = find_amount(ln.text)
+        fallback = classify(ln.text, None) == "text"  # 語ではなく金額だけで商品・値引と判断される行
+        if fallback and a is not None and a.yen_marked and a.value != 0:
+            yen_style = True
+            if header_end is None:
+                header_end = ln.index
+        if header_end is None and _DATE.search(ln.text):
+            header_end = ln.index
+
     def add_item(name: str, src: list[Line], amount: Money, qty: int | None, unit: int | None) -> None:
         reasons: list[str] = []
+        if not amount.yen_marked:
+            reasons.append("BARE_AMOUNT")
         q = qty or 1
         if unit is not None and qty is not None and unit * qty != abs(amount.value):
             reasons.append("QTY_PRICE_INCONSISTENT")
@@ -309,6 +343,11 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
         text = ln.text
         amount = find_amount(text)
         role = classify(text, amount)
+        bare_dropped = False
+        if (amount is not None and not amount.yen_marked and role in ("item", "discount")
+                and classify(text, None) == "text"
+                and (yen_style or (header_end is not None and ln.index < header_end))):
+            amount, role, bare_dropped = None, "text", True
         if purchased_on is None and (d := _DATE.search(text)):
             purchased_on = f"{int(d.group(1)):04d}-{int(d.group(2)):02d}-{int(d.group(3)):02d}"
             role = "date"
@@ -318,6 +357,8 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
             reduced_legend_seen = True
         line_log.append({"index": ln.index, "text": text, "role": role, "score": round(ln.score, 4),
                          "bbox": list(ln.bbox), "amount": amount.value if amount else None})
+        if bare_dropped:
+            line_log[-1]["bare_amount_ignored"] = True
 
         if role == "count":
             if item_count_printed is None and (c := _COUNT.search(text)):

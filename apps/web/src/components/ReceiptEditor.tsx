@@ -65,6 +65,7 @@ const REASON_LABEL: Record<string, string> = {
   POINT_USAGE: "ポイント利用(誰の負担を減らすか確認してください)",
   REFUND: "返品・取消の行",
   TAX_GROUP_INFERRED: "軽減税率の記号が読めず、税額から税率を推定",
+  BARE_AMOUNT: "¥ の付いていない数字を金額として読み取り",
 };
 
 const RULE_LABEL: Record<RuleType, string> = {
