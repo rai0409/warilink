@@ -1,0 +1,51 @@
+# 計算ストレステスト(PR D)。通常の PR の CI(ci.yml の api / web / e2e)とは分け、週 1 回と手動でだけ実行する。
+# DB はこのジョブだけの使い捨てサービスコンテナ(ジョブ終了で破棄)。本番・共有の DB には接続しない。
+# 固定した 3 つの乱数の種で、10 万件の配分・5,000 件の明細・1 万件の 1 円不一致・2,000 件の台帳・全探索との照合などを行い、
+# 1 つでも失敗すればジョブを失敗にする。結果(JSON)は 14 日だけ artifact として残す。
+name: stress
+on:
+  schedule:
+    - cron: "17 18 * * 0"  # 毎週月曜 03:17 JST(日曜 18:17 UTC)
+  workflow_dispatch:
+
+concurrency:
+  group: stress
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [20261030, 11, 4242]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env: { POSTGRES_USER: warilink, POSTGRES_PASSWORD: warilink-dev-only, POSTGRES_DB: warilink_test }
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U warilink" --health-interval 3s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.13" }
+      - run: python -m venv .venv && .venv/bin/pip install uv==0.13.1
+      - run: cd apps/api && UV_PROJECT_ENVIRONMENT=../../.venv ../../.venv/bin/uv sync --frozen
+      - name: Calculation stress (seed ${{ matrix.seed }})
+        run: cd apps/api && ../../.venv/bin/pytest -m stress -p no:cacheprovider tests/stress tests/api/test_stress_api.py
+        env:
+          WARILINK_DATABASE_URL: postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink_test
+          WARILINK_STRESS_SEED: ${{ matrix.seed }}
+          WARILINK_STRESS_REPORT: ${{ runner.temp }}/stress-report-${{ matrix.seed }}.json
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stress-report-${{ matrix.seed }}
+          path: ${{ runner.temp }}/stress-report-${{ matrix.seed }}.json
+          retention-days: 14
+          if-no-files-found: warn

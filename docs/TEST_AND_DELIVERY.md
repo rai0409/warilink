@@ -375,3 +375,17 @@
 | `RESTORE_DRILL` | PASS(一時コンテナ `warilink-drill-db`、終了後に削除) |
 | `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` / `MONITOR_ALERT_LIVE` / `RPO_RTO_PROVEN` | **BLOCKED**(保管先・KMS・通知先が未選定、本番相当の計測なし) |
 | `RELEASE_READY` | **BLOCKED** |
+
+## PR D: OCR の品質ゲート・計算ストレスの定期実行・画面の頑健さ(2026-10-31)
+
+| 対象 | テスト |
+|---|---|
+| OCR の反例: 「※」の一部の読み落とし(税額から推定 / 決まらなければ空にして要確認)、内訳の無い凡例(仮定を警告)、整合した記号(警告なし)、¥ 付きのレシートの裸の数字(必ず不一致を警告)、合計が合っても品目が欠けたら正答にしない、税額の整数比較が有理数の計算と同じ | `tests/ocr/test_parser_counterexamples.py` |
+| 公開判定のゲート(合成では PASS にしない・件数不足・閾値未決定)、分割の汚染の検出、同意の無い実レシートを使わない | `tests/ocr/test_release_gates.py` |
+| 計算: 返品・0 円・100 人(API の上限)、20 人の境界で上限時間を縮めた場合(遅い CPU の再現)、精算の同時確定(6 並列で 1 件だけ)と冪等な再送 | `tests/stress/test_settlement_stress.py`・`tests/api/test_stress_api.py` |
+| 画面: 登録の多重タップで 1 件、全角・カンマの金額、整数でない金額は登録不可、通信の切断で日本語のエラー → 復帰後 1 件、戻る・進むで二重登録なし | `apps/web/e2e/robustness.spec.ts` |
+| 計算ストレスの定期実行 | `.github/workflows/stress.yml`(週 1 回・手動。種 20261030 / 11 / 4242、30 分の上限、結果は 14 日の artifact) |
+
+- 手元での実行(3 つの種、各 11 件): すべて PASS(各 90〜96 秒)。20 人の厳密解は上限 200 ms では常に貪欲法に切り替わる(1,500 ms では厳密解)。
+- 判定: `OCR_REAL_HOLDOUT=BLOCKED`(実レシート 0 件)、`OCR_RELEASE=BLOCKED`(閾値未決定)、
+  `SCHEDULED_RUN=UNEXECUTED`(定期実行の初回をまだ観測していない)、`DEVICE_MANUAL_QA=UNEXECUTED`(`docs/QA_DEVICE_CHECKLIST.md`)。

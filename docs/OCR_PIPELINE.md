@@ -177,6 +177,30 @@ PP-OCRv6(medium)は、きれいな画像でも「※」を毎回読み落とす(
 合成レシート(synth-0.2.0)に、架空の住所・電話・店舗番号/端末番号・登録番号のヘッダー(7 割)、¥ を印字しない書式(3 割)、
 電子マネー・カードの支払(5 割)を加えた。
 
+### 6.4 rule-ja-0.3.1 での変更(2026-10-31、PR D):税区分を黙って確定しない
+
+| 状況 | 0.3.1 の扱い |
+|---|---|
+| 凡例と一部の「※」が読め、印字された 8%・10% の外税額と合う | そのまま(警告なし) |
+| 凡例はあるが、記号の無い商品を 10% にすると税額と合わない(「※」の一部の読み落とし) | 税額に合う組み合わせが 1 通りなら推定して要確認(`TAX_GROUP_INFERRED`)。決まらなければ記号の無い商品の税率を空にして要確認(理由 `TAX_GROUP_UNVERIFIED`、警告 `TAX_GROUP_MISMATCH`) |
+| 凡例はあるが税額の内訳が無く確かめられない(内税) | 記号の無い商品を 10% とし、警告 `TAX_GROUP_ASSUMED`(記号の読み落としの確認を促す) |
+
+- 税額の照合は整数だけで行う(`|小計 × 税率 − 税額 × 100| < 100`)。以前の浮動小数点の比較と結果が同じことを
+  有理数の計算との比較(Hypothesis 3,000 件)で確かめた。
+- 合成 synth-0.1.0 hard 30 枚・synth-0.2.0 hard 60 枚(同じ認識結果): 0.3.0 → 0.3.1 で全指標が同じ(評価ゲート `accepted`)。
+  structure_exact は 0.90・0.77 のまま(残りは内税で内訳が無く、記号も読めないもの。`TAX_GROUP_ASSUMED` で利用者に知らせる)。
+
+### 6.5 公開判定のゲート(PR D)
+
+- `evaluate` の結果に `release_gates` を付ける。実レシートの最終評価(`real_ja` の holdout。同意・verified・分割がそろったもの)
+  だけで判定し、**合成・公開データの結果では PASS にしない**。
+  - `OCR_REAL_HOLDOUT`: holdout が 0 件 → `BLOCKED`、30 件未満 → `INSUFFICIENT`、それ以上 → `MEASURED`
+  - `OCR_RELEASE`: holdout が測れていない、または商用の閾値が未決定(`RELEASE_THRESHOLDS = None`、`OWNER_APPROVAL_REQUIRED`)の間は `BLOCKED`
+- 同じ画像が tune と holdout の両方にあれば評価を止める(分割の汚染)。
+- 閾値の候補(決定はプロダクト責任者): receipt_exact_rate ≥ 0.90、structure_exact_rate ≥ 0.80、total_correct_rate ≥ 0.98、
+  amount_error_rate ≤ 0.02(いずれも holdout の 95% 信頼区間の下限で判定する案)。
+- 2026-10-31 時点: real_ja の holdout は 0 件 → `OCR_REAL_HOLDOUT=BLOCKED`、`OCR_RELEASE=BLOCKED`。
+
 出力(`ocr_runs.draft`): `items[{id, name, quantity, line_minor, tax_group, confidence, needs_review, reasons, bbox, source_lines}]`,
 `adjustments[...]`, `subtotal_minor`, `total_minor`, `tax_mode`, `difference_minor`, `warnings`, `lines[行ごとの役割判定]`, `image_scale`。
 
