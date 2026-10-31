@@ -32,6 +32,7 @@ from app.models.tables import (
     Group,
     Identity,
     Invitation,
+    MaintenanceRun,
     Membership,
     PasskeyCredential,
     PaymentDestination,
@@ -41,6 +42,20 @@ from app.models.tables import (
 from app.modules.groups.lifecycle import groups_due_for_deletion, hard_delete_group, mark_if_orphaned, release_owner
 from app.modules.payment_destinations.router import crypto_erase
 from app.ocr.images import delete_image
+
+RETENTION_JOB = "retention_purge"
+
+
+def record_run(db: Session, job: str, *, ok: bool, at: datetime | None = None) -> None:
+    """定期ジョブの結果(時刻だけ)を残す。画面の「自動削除が動いているか」の根拠にする(方針の日数とは別)。"""
+    t = at or now()
+    row = db.get(MaintenanceRun, job) or MaintenanceRun(job=job)
+    if ok:
+        row.last_success_at = t
+    else:
+        row.last_failure_at = t
+    db.add(row)
+    db.commit()
 
 
 def purge_retention(db: Session, *, at: datetime | None = None) -> dict[str, int]:

@@ -16,6 +16,7 @@ export type ExpenseBody = Schemas["ExpenseIn"];
 export type Revision = Schemas["RevisionOut"];
 export type Issue = Schemas["IssueOut"];
 export type Plans = Schemas["PlansOut"];
+export type Retention = Schemas["RetentionOut"];
 export type Receipt = Schemas["ReceiptOut"];
 export type Quota = Schemas["QuotaOut"];
 

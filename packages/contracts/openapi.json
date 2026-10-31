@@ -2080,6 +2080,27 @@
         }
       }
     },
+    "/api/v1/retention": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Retention",
+        "operationId": "retention_api_v1_retention_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/ocr/quota": {
       "get": {
         "tags": [
@@ -2723,6 +2744,54 @@
           "locked_transfers_preserved"
         ],
         "title": "AssumptionsOut"
+      },
+      "AutomaticDeletionOut": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "unverified"
+            ],
+            "title": "Status"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "last_failure_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failure At"
+          },
+          "max_age_hours": {
+            "type": "integer",
+            "title": "Max Age Hours"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "last_success_at",
+          "last_failure_at",
+          "max_age_hours"
+        ],
+        "title": "AutomaticDeletionOut"
       },
       "BalanceRowOut": {
         "properties": {
@@ -4982,6 +5051,60 @@
           "credential"
         ],
         "title": "RegisterVerifyIn"
+      },
+      "RetentionOut": {
+        "properties": {
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/RetentionPolicyOut"
+            },
+            "type": "array",
+            "title": "Policies"
+          },
+          "automatic_deletion": {
+            "$ref": "#/components/schemas/AutomaticDeletionOut"
+          },
+          "backup_encrypted_offsite": {
+            "type": "boolean",
+            "title": "Backup Encrypted Offsite"
+          }
+        },
+        "type": "object",
+        "required": [
+          "policies",
+          "automatic_deletion",
+          "backup_encrypted_offsite"
+        ],
+        "title": "RetentionOut",
+        "description": "保存期間の方針(設定値)と、削除ジョブの実績(記録)を分けて返す。方針だけでは削除されたことにならない。"
+      },
+      "RetentionPolicyOut": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "receipt_images",
+              "audit_logs",
+              "expired_sessions",
+              "expired_invites",
+              "orphaned_groups",
+              "closed_groups",
+              "backups",
+              "deletion_tombstones"
+            ],
+            "title": "Key"
+          },
+          "days": {
+            "type": "integer",
+            "title": "Days"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "days"
+        ],
+        "title": "RetentionPolicyOut"
       },
       "RevisionOut": {
         "properties": {
