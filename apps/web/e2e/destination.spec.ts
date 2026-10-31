@@ -99,3 +99,82 @@ test("受取人が共有した振込先を、支払者だけが確認でき、�
   await dialog.getByRole("button", { name: "削除する" }).click();
   await expect(a.getByRole("status").filter({ hasText: "振込先を削除しました" })).toBeVisible();
 });
+
+test("前の振込先の表示が、別の送金・再訪問・遅れた応答・ログイン状態の変化で残らない", async ({ browser, baseURL }) => {
+  // A(受取人・登録済み)と C(名前だけ)が立て替え、B が 2 人へ送金する
+  const a = await newUser(browser, { baseURL });
+  await createGroup(a, "表示の切り替え", "Bさん, Cさん");
+  const home = groupHome(a);
+  const inviteUrl = await createInvite(a);
+  await passkeyDevice(a);
+  await a.goto("/account");
+  await a.getByRole("button", { name: "Passkey を登録する" }).click();
+  await expect(a.getByText("Passkey 登録済み")).toBeVisible();
+  await a.reload();
+  await fillBank(a, "1234567", "本店");
+  await a.getByRole("button", { name: "保存する" }).click();
+  await expect(a.getByRole("status").filter({ hasText: "振込先を登録しました" })).toBeVisible();
+
+  const b = await newUser(browser, { baseURL });
+  await joinAs(b, inviteUrl, "Bさん", "表示の切り替え");
+  const me = await (await b.request.get("/api/v1/groups/" + home.split("/")[2])).json();
+  const id = (name: string) => me.members.find((m: { display_name: string }) => m.display_name === name).id;
+  for (const [payer, title] of [["Aさん", "宿"], ["Cさん", "夕食"]] as const) {
+    const r = await b.request.post(`/api/v1/groups/${me.public_id}/expenses`, {
+      headers: { "X-WariLink-CSRF": "1", "Idempotency-Key": crypto.randomUUID() },
+      data: { title, amount_minor: 3000, payers: [{ member_id: id(payer), amount_minor: 3000 }],
+        split: { mode: "equal", shares: [{ member_id: id("Bさん"), value: 1 }] } },
+    });
+    expect(r.status()).toBe(201);
+  }
+  await b.goto(`${home}/settle`);
+  await b.getByRole("button", { name: "精算案を確定" }).click();
+  const list = b.getByRole("list", { name: "確定した精算" });
+  await expect(list.getByRole("link")).toHaveCount(2);
+
+  // 1) A への送金で振込先を表示 → C への送金へ移ると、A の口座は出ない
+  await list.getByRole("link").filter({ hasText: "Aさん" }).click();
+  await expect(b).toHaveURL(/\/settle\/[0-9a-f-]{36}$/);
+  const toA = b.url();
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  await expect(b.getByLabel("振込先", { exact: true })).toContainText("1234567");
+  await b.getByRole("link").filter({ hasText: "Cさんへ" }).click();
+  await expect(b).not.toHaveURL(toA);
+  await expect(b.getByText("1234567")).toHaveCount(0);
+  await expect(b.getByRole("button", { name: "振込先を表示" })).toBeVisible();
+
+  // 2) 戻る(再訪問)と、押すまで表示しない
+  await b.goBack();
+  await expect(b).toHaveURL(toA);
+  await expect(b.getByRole("button", { name: "振込先を表示" })).toBeVisible();
+  await expect(b.getByText("1234567")).toHaveCount(0);
+
+  // 3) 表示の応答が遅れて、その間に別の送金へ移った: 遅れて届いた A の口座を出さない
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  await b.route("**/destination", async (route) => {
+    await held;
+    await route.continue();
+  });
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  await b.getByRole("link").filter({ hasText: "Cさんへ" }).click();
+  await expect(b).not.toHaveURL(toA);
+  release();
+  await b.waitForTimeout(1_000);
+  await expect(b.getByText("1234567")).toHaveCount(0);
+  await b.unroute("**/destination");
+
+  // 4) 表示中にセッションが切れた(別のタブでのログアウトなど): 画面に戻ったら表示を閉じる
+  await b.goto(toA);
+  await b.getByRole("button", { name: "振込先を表示" }).click();
+  await expect(b.getByLabel("振込先", { exact: true })).toContainText("1234567");
+  await b.context().clearCookies();
+  await b.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(b.getByText("1234567")).toHaveCount(0);
+  await expect(b.getByRole("status").filter({ hasText: "振込先の表示を閉じました" })).toBeVisible();
+
+  // 5) 受取人 A 自身の画面には振込先の表示ボタンを出さない
+  await a.goto(toA);
+  await expect(a.getByRole("heading", { name: "受け取りの確認" })).toBeVisible();
+  await expect(a.getByRole("button", { name: "振込先を表示" })).toHaveCount(0);
+});

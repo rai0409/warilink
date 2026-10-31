@@ -158,5 +158,5 @@ class BankDataProvider(Protocol):
 
 - API サーバーは `uvicorn --no-proxy-headers --no-access-log` で起動する。uvicorn は既定で 127.0.0.1 からの `X-Forwarded-For` を
   信じて接続元を書き換えるため、回数制限の判定をアプリ側の `WARILINK_TRUSTED_PROXIES` だけに任せる。アクセスログには招待トークンを含む
-  URL が残るため出さない(`infra/compose.yaml`、`apps/web/playwright.config.ts`)。`apps/api/Dockerfile` の既定の起動コマンドは
-  まだ旧設定で、本番イメージでは同じ引数で起動する(Dockerfile の修正は STEP5 の変更範囲外のため別途)。
+  URL が残るため出さない(`infra/compose.yaml`、`apps/web/playwright.config.ts`、`apps/api/Dockerfile`。一致は
+  `apps/api/tests/test_deploy_config.py` で検査)。前段の逆プロキシ・Next.js のログは別途、導入先で扱う(`docs/SECURITY_PRIVACY.md` §2.3.1)。
