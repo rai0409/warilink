@@ -2,3 +2,6 @@
 # 導入先で crontab に追加する前に、WARILINK_DATABASE_URL / WARILINK_RECEIPT_STORAGE_DIR と通知先を設定すること。
 # CRON_TZ=Asia/Tokyo
 # 30 3 * * * cd /srv/warilink && WARILINK_ALERT_CMD='logger -t warilink-alert' scripts/warilink_purge_job.sh >> /var/log/warilink/purge.log 2>&1
+# 例(未導入): 暗号化バックアップ(鍵・外部保管先・DB の設定が必要。infra/ops/README.md)と、1 時間ごとの監視
+# 0 4 * * * cd /srv/warilink && .venv/bin/python scripts/warilink_backup.py backup --db warilink --receipts-dir /data/receipts --out /var/backups/warilink/$(date +\%Y\%m\%d) >> /var/log/warilink/backup.log 2>&1
+# 15 * * * * cd /srv/warilink/apps/api && WARILINK_ALERT_CMD='logger -t warilink-alert' ../../.venv/bin/python -m app.ops.monitor >> /var/log/warilink/monitor.log 2>&1

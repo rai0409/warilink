@@ -357,3 +357,21 @@
 
 - 下書き: `docs/legal/`(`OWNER_APPROVAL_REQUIRED` の一覧は `docs/legal/README.md`)。
 - `LEGAL_APPROVAL=BLOCKED`(運営者・専門家の確認待ち)、`RETENTION_RUNTIME=BLOCKED`(導入先で定期ジョブが未登録)。
+
+## PR C: 暗号化バックアップ・削除の復元防止・監視(2026-10-31)
+
+| 対象 | テスト |
+|---|---|
+| 暗号化の往復(0 バイト〜複数の塊)、1 ビットの改ざん・切り詰め・塊の入れ替え・後ろへの追加・別ファイル/別バックアップとしての復号・鍵違いの拒否、包んだ鍵の付け替えの拒否、環境変数の鍵の検証 | `tests/ops/test_backup_crypto.py` |
+| 外部保管: 置いた後のハッシュ確認・再実行で重複しない・再試行・manifest を最後に置く・保管先の外に書かない・未対応の保管先は接続しない | `tests/ops/test_offsite.py` |
+| バックアップの形式(平文が残らない・鍵を含めない)、復元の拒否(削除済み一覧なし・古い・鍵違い・改ざん 6 種・包んだ鍵の付け替え・撮影時点の画像の欠け)を DB に触れる前に行う、本番の条件(平文不可・鍵必須・外部保管なしは 4)、prune | `tests/ops/test_backup_script.py` |
+| 監視: ジョブの最後の成功(なし・古い・成功後の失敗)、/health(URL を通知に含めない)、通知の重複の抑制と回復の通知、通知の失敗、終了コード | `tests/api/test_monitor.py` |
+| 復元訓練(隔離した一時コンテナ): 暗号化 backup → 退会 → 一覧の書き出し → restore → 削除の再適用 → 読み戻し | `scripts/warilink_backup.py drill`(2026-10-31 PASS) |
+
+| ゲート | 結果 |
+|---|---|
+| `PR_C_CODE` | CI 結果による |
+| `ENCRYPTED_BACKUP_TEST` | PASS(上のテスト) |
+| `RESTORE_DRILL` | PASS(一時コンテナ `warilink-drill-db`、終了後に削除) |
+| `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` / `MONITOR_ALERT_LIVE` / `RPO_RTO_PROVEN` | **BLOCKED**(保管先・KMS・通知先が未選定、本番相当の計測なし) |
+| `RELEASE_READY` | **BLOCKED** |

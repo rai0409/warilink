@@ -186,7 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     with Session(get_engine()) as db:
         if args.cmd == "export-tombstones":
-            print(json.dumps({"appended": export_tombstones(db, Path(args.out))}))
+            appended = export_tombstones(db, Path(args.out))
+            record_run(db, "tombstone_export", ok=True)  # 監視で書き出しの新しさを見る(PR C)
+            print(json.dumps({"appended": appended}))
         else:
             print(json.dumps({"reapplied": apply_tombstones(db, Path(args.src))}))
     return 0
