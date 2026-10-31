@@ -18,11 +18,12 @@ open http://localhost:3000
 make down        # このプロジェクトのコンテナのみ停止(ボリュームは残す)
 ```
 
-## 現在の状態(2026-10-29)
+## 現在の状態(2026-10-31)
 
-V0 の STEP1〜4(機能フラグ・振込先の削除・濫用対策・退会とデータ保持)は main に入り、GitHub Actions(api / web / e2e)で通過済み。
-STEP5(運用・本番設定の点検)の結論は **公開判定 BLOCKED**: 大量の金額計算の検証が未実行、バックアップの暗号化・外部保管と
-通知先・外形監視が未設定、KMS が未導入、非商用ライセンス。詳細は `docs/TEST_AND_DELIVERY.md` の「STEP5」を参照してください。
+V0 の STEP1〜5、UI v2(PR #8)、OCR の改善(#9・#11)は main に入り、GitHub Actions(api / web / e2e)で通過済み。
+大量の金額計算の検証(`CALCULATION_STRESS`)は PR #10 で PASS(`make test-stress`)。
+商用公開の判定は引き続き **BLOCKED**: バックアップの暗号化・外部保管と通知先・外形監視が未設定、KMS が未導入、利用規約・
+プライバシーポリシーが未確定、実レシートでの OCR 精度が未測定、非商用ライセンス。詳細は `docs/TEST_AND_DELIVERY.md` を参照してください。
 
 ## テストの安全装置
 

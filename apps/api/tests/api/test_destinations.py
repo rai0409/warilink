@@ -435,3 +435,21 @@ def test_step_up_that_switches_account_cannot_touch_the_original_owners_data(use
     assert a.delete("/account/payment-destination").status_code == 404  # B には振込先が無い
     assert a.post("/account/payment-destination/sharing", json={"share_with_payers": False}).status_code == 404
     assert _encrypted_count() == 1 and _erase_audits() == []
+
+
+def test_destination_follows_the_current_session_and_is_never_cached(user_factory):
+    """PR A: 応答は保存させない。セッションが切れた・別の人の Cookie に替わった時点で表示できない。"""
+    o, p, q, r, outsider, pid, ids, t = scenario(user_factory)
+    p.post("/account/payment-destination", json=bank())
+    path = f"/settlements/{t['id']}/destination"
+    res = q.get(path)
+    assert res.status_code == 200 and res.json()["details"]["account_number"] == ACCOUNT
+    assert res.headers["cache-control"] == "no-store"  # ブラウザ・中継にキャッシュさせない
+    # 同じブラウザで別の人に切り替わった(別の Cookie): 存在も分からない
+    q.c.cookies, saved = outsider.c.cookies, q.c.cookies
+    assert q.get(path).status_code == 404
+    q.c.cookies = saved
+    # セッションが失効した(ログアウト・期限切れ): 401 で、口座番号を返さない
+    _set_session(q, revoked_at=datetime.now(UTC))
+    gone = q.get(path)
+    assert gone.status_code == 401 and ACCOUNT not in gone.text

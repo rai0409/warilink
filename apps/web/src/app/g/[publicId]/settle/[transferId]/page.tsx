@@ -117,7 +117,7 @@ export default function TransferPage() {
           </>
         )}
         {payer && t.status === "reported_paid" && <Muted className="mt-4">受け取る人の確認を待っています。</Muted>}
-        {destinations && payer && (t.status === "unpaid" || t.status === "reported_paid") && <DestinationView transfer={t} />}
+        {destinations && payer && (t.status === "unpaid" || t.status === "reported_paid") && <DestinationView key={t.id} transfer={t} />}
 
         {recipient && t.status === "reported_paid" && (
           <>
