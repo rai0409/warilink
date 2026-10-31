@@ -36,3 +36,40 @@
 - 復元訓練は月 1 回、**本番・既存の DB とは別の使い捨てコンテナ**で行う(例: `--container warilink-drill-db --port 55433`。
   2026-10-29 に一時コンテナで実施し PASS、終了後に削除)。既存のコンテナで `drill` を実行しない(DB の作成・削除を伴う)。
 - API は `--no-proxy-headers --no-access-log` で起動する(`docs/SYSTEM_ARCHITECTURE.md` §8)。
+
+## 暗号化バックアップ・監視の手順(PR C、2026-10-31)
+
+### 運用者が決めて設定するもの(未設定の間は該当のゲートが BLOCKED)
+
+| 設定 | 内容 | 状態 |
+|---|---|---|
+| `WARILINK_BACKUP_KEYS` / `WARILINK_BACKUP_ACTIVE_KEY` | バックアップの KEK(32 バイトの乱数を base64)。シークレットストアで管理し、バックアップの保管先に置かない。入れ替えたら古い鍵 ID は 30 日(保持期間)残す | 未設定(KMS へ移す: `KMS_LIVE=BLOCKED`) |
+| `WARILINK_BACKUP_OFFSITE` | 外部の保管先。書き込み専用の資格情報・バージョン管理またはオブジェクトロック(30 日)・保管先の暗号化・復元用の読み取り権限を別担当にする | 未選定(`OFFSITE_STORAGE_LIVE=BLOCKED`) |
+| `WARILINK_TOMBSTONE_FILE` | 削除済み一覧(DB の外)。バックアップとは別の保管先にも複製し、30 日以上残す | 未設定 |
+| `WARILINK_ALERT_CMD` | 通知コマンド(標準入力で要約を受け取る) | 未設定(`MONITOR_ALERT_LIVE=BLOCKED`) |
+| `WARILINK_MONITOR_API_URL` | 外形監視する API の URL(`/api/v1/health`) | 未設定 |
+| `WARILINK_RESTORE_DB_PASSWORD` | 復元先 DB の接続(削除の再適用に使う) | 復元のときに設定 |
+
+### 日次
+1. `scripts/warilink_purge_job.sh`(保持期限の削除・整合性検査・削除済み一覧の書き出し)
+2. `scripts/warilink_backup.py backup --db … --receipts-dir … --out …`(暗号化。外部保管へ送り、成功を `maintenance_runs` に記録)
+3. `scripts/warilink_backup.py prune --root …`(30 日を過ぎたもの。manifest の無いもの・知らない形式には触れない)
+4. `cd apps/api && python -m app.ops.monitor`(1 時間ごとを推奨。ジョブの最後の成功が 26 時間より古い・DB に届かない・
+   `/health` が 200 以外・OCR ワーカーの停止で通知。同じ内容は 6 時間まとめ、直ったら 1 回「回復」を送る)
+
+### 月次
+- 復元訓練: `scripts/warilink_backup.py --container warilink-drill-db --port 55433 drill --workdir 空のディレクトリ`
+  (既存のコンテナでは行わない。一時コンテナを作り、終わったら消す)。暗号化 backup → 退会 → 削除済み一覧の書き出し →
+  restore(削除の再適用)→ 件数・ハッシュ・外部キー・削除が保たれていること → アプリから読み戻し、まで行う。
+  2026-10-31 に一時コンテナで実施し PASS(7.7 秒、合成データ 17 行・画像 1 枚)。**本番相当の量での RTO は未計測**。
+- 鍵の入れ替えの確認(新しい鍵で作れること・古い鍵の版で過去のバックアップを開けること)。
+
+### 復元の手順(本番の切り戻しは未設計。以下は検証用の復元)
+1. `restore --from バックアップ --target-db warilink_restore_… --receipts-target 空のディレクトリ --tombstones $WARILINK_TOMBSTONE_FILE`
+2. 削除済み一覧がバックアップの時点より古い・指定が無い → 拒否される。最新の一覧(別の保管先の複製)を探す。
+3. 認証に失敗(改ざん・鍵違い・欠け)→ DB には何も作られない。別の日のバックアップを試し、原因(保管先・鍵)を調べる。
+4. 撮影時点で画像が欠けていたバックアップ → 欠けを承知のうえで `--accept-missing-images`。
+5. 結果の `checks` がすべて true であることを確認(`tombstones_reapplied`・`deletions_hold` を含む)。
+
+### 目標値(実測ではない)
+RPO 24 時間・RTO 4 時間は目標。本番の量・保管先からの取り出し時間を含めた計測は未実施(`RPO_RTO_PROVEN=BLOCKED`)。
