@@ -713,6 +713,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retention */
+        get: operations["retention_api_v1_retention_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ocr/quota": {
         parameters: {
             query?: never;
@@ -964,6 +981,20 @@ export interface components {
             per_transfer_limit_minor: number | null;
             /** Locked Transfers Preserved */
             locked_transfers_preserved: boolean;
+        };
+        /** AutomaticDeletionOut */
+        AutomaticDeletionOut: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "verified" | "unverified";
+            /** Last Success At */
+            last_success_at: string | null;
+            /** Last Failure At */
+            last_failure_at: string | null;
+            /** Max Age Hours */
+            max_age_hours: number;
         };
         /** BalanceRowOut */
         BalanceRowOut: {
@@ -1720,6 +1751,27 @@ export interface components {
             };
             /** Nickname */
             nickname?: string | null;
+        };
+        /**
+         * RetentionOut
+         * @description 保存期間の方針(設定値)と、削除ジョブの実績(記録)を分けて返す。方針だけでは削除されたことにならない。
+         */
+        RetentionOut: {
+            /** Policies */
+            policies: components["schemas"]["RetentionPolicyOut"][];
+            automatic_deletion: components["schemas"]["AutomaticDeletionOut"];
+            /** Backup Encrypted Offsite */
+            backup_encrypted_offsite: boolean;
+        };
+        /** RetentionPolicyOut */
+        RetentionPolicyOut: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "receipt_images" | "audit_logs" | "expired_sessions" | "expired_invites" | "orphaned_groups" | "closed_groups" | "backups" | "deletion_tombstones";
+            /** Days */
+            days: number;
         };
         /** RevisionOut */
         RevisionOut: {
@@ -3238,6 +3290,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlansOut"];
+                };
+            };
+        };
+    };
+    retention_api_v1_retention_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetentionOut"];
                 };
             };
         };

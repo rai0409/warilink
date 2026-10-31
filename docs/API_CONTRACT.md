@@ -286,3 +286,9 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | GET | `/groups/{public_id}/invites/status` | 使える招待があるか `{active, expires_at}`(トークンは返さない。保存はハッシュだけ) | member |
 | PATCH | `/groups/{public_id}/members/{member_id}` | 表示名の変更 `{display_name}`。自分の名前、作成者なら未参加のメンバーの名前 | member / owner(他は 403) |
 | POST | `/settlements/{transfer_id}/not-received` | 受取人が「まだ受け取っていない」と記録し、送金の申告を取り消して未送金に戻す。確認済みは 409 `TRANSFER_NOT_REPORTED` | その送金の受取人 |
+
+### PR B で追加(2026-10-31)
+
+| Method | Path | 用途 | 権限 |
+|---|---|---|---|
+| GET | `/retention` | データの種類ごとの保存期間(方針=設定値)`policies[{key, days}]` と、期限を過ぎたデータを消す処理の実績 `automatic_deletion{status: verified\|unverified, last_success_at, last_failure_at, max_age_hours}`、`backup_encrypted_offsite`。`verified` は削除ジョブ(`purge-images`)が直近 48 時間以内に成功した記録があるときだけ。方針の日数だけでは削除されたことにしない | 誰でも(個人情報を含まない) |

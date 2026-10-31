@@ -456,6 +456,16 @@ class OcrWorkerHeartbeat(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class MaintenanceRun(Base):
+    """定期ジョブの最後の成功・失敗の時刻(PR B)。保持期限の削除が実際に動いているかを画面・監視で確かめるため。
+    件数・ID・エラーの本文は持たない(個人情報を含みうるため)。"""
+
+    __tablename__ = "maintenance_runs"
+    job: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PaymentDestination(Base):
     """登録済み利用者の振込先(1 人 1 件)。中身は版ごとに暗号化して payment_destination_versions に置く。"""
 

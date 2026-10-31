@@ -1,12 +1,5 @@
-import { Body, Muted, Screen, TopBar } from "@/components/kit";
+import { DraftDocument } from "@/components/DraftDocument";
 
 export default function Page() {
-  return (
-    <Screen>
-      <TopBar title="利用規約" back="/settings" />
-      <Body>
-        <Muted className="mt-6">。公開までお待ちください。</Muted>
-      </Body>
-    </Screen>
-  );
+  return <DraftDocument title="利用規約" />;
 }

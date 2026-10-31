@@ -207,6 +207,10 @@
   (`POST /groups/{id}/owner`)。誰もいなければ「参加者不在」(`groups.orphaned_at`)になり、誰かが参加すると取り消す。
 - 作成者は「終了」できる(`POST /groups/{id}/close`、`groups.closed_at`)。以後は閲覧のみで、支出・精算・メンバー・招待・参加の
   変更は `409 GROUP_CLOSED`。招待はすべて失効する。
+- 方針と実績を分ける(PR B、2026-10-31): 上の表は方針(設定値)。期限処理は導入先が定期ジョブを登録して初めて動く
+  (このリポジトリは何も自動登録しない)。`purge-images` は成功・失敗の時刻だけを `maintenance_runs`(job, last_success_at,
+  last_failure_at。件数・ID・エラー本文は持たない)に残し、`GET /retention` と画面は直近 48 時間以内の成功があるときだけ
+  「動いています」と示す。無ければ「動いていることを確認できない(期間を過ぎても残っている場合がある)」と示す。
 - 復元: バックアップから戻した後は、DB の外の削除済み一覧で退会・振込先の消去・グループの削除を再適用する
   (`python -m app.modules.identity.retention apply-tombstones`、`infra/ops/README.md`)。これで「削除したデータは、最長 30 日で
   バックアップからも消え、それより前に戻しても削除が再適用される」。WAL・スナップショットなど DB 以外の複製は、保管先の設定に従う。

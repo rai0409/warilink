@@ -9,6 +9,8 @@
 
 - cron の例: `warilink-purge.cron.example`(コメントアウト済み)。compose・systemd への組み込みはしていない。
 - `purge-images` は何度実行してもよい(削除済みは対象外。ファイルを消せなかった行は DB に記録せず次回再試行)。
+  実行のたびに成功・失敗の時刻を `maintenance_runs` に残す。画面「データの保存期間」は直近 48 時間以内の成功があるときだけ
+  「動いています」と表示する(ジョブを登録しない環境では「確認できません」と表示し、自動削除を約束しない)。
 - `check-storage` は読み取り専用。不一致(DB は画像ありなのにファイルが無い / DB に無いファイル)は終了コード 2。
 - Compose の画像は名前付きボリューム `warilink_receipts`。バックアップでは `docker compose cp api:/data/receipts …` などで
   ディレクトリに取り出してから `--receipts-dir` に渡す(ボリュームを直接書き換えない)。
