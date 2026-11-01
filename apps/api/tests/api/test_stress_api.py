@@ -104,3 +104,37 @@ def test_itemized_expense_at_item_limit(user_factory):
     assert r.status_code == 201, r.text
     assert sum(r.json()["shares"].values()) == total
     record("api_itemized_300_items", items=300, adjustments=50, members=30, elapsed_ms=timer.summary()["max_ms"])
+
+
+def test_settlement_confirmation_is_serialized_and_idempotent(user_factory):
+    """同時に精算を確定しても 1 件だけ作られ、同じ Idempotency-Key の再送は同じ結果を返す(二重確定しない)。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    owner = user_factory()
+    g, ids = make_group(owner, names=[f"メンバー{i}" for i in range(1, 6)], title="同時確定")
+    pid = g["public_id"]
+    members = list(ids.values())
+    for e in range(30):
+        r = owner.post(f"/groups/{pid}/expenses", json={
+            "title": f"支出{e}", "amount_minor": 1_000 + e,
+            "payers": [{"member_id": members[e % 6], "amount_minor": 1_000 + e}],
+            "split": {"mode": "equal", "shares": [{"member_id": m, "value": 1} for m in members]}})
+        assert r.status_code == 201
+    v = owner.get(f"/groups/{pid}").json()["ledger_version"]
+    body = {"expected_ledger_version": v}
+
+    def confirm(key):
+        return owner.post(f"/groups/{pid}/settlement-batches", json=body, key=key).status_code
+
+    import uuid
+
+    keys = [str(uuid.uuid4()) for _ in range(6)]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        codes = list(pool.map(confirm, keys))
+    assert codes.count(201) == 1 and all(c in (201, 409) for c in codes), codes
+    batches = owner.get(f"/groups/{pid}/settlement-batches").json()
+    assert len([b for b in batches if b["state"] == "active"]) == 1
+    # 同じキーでの再送は同じ応答(新しい確定を作らない)
+    assert confirm(keys[0]) == codes[0]
+    assert len(owner.get(f"/groups/{pid}/settlement-batches").json()) == len(batches)
+    record("api_settlement_concurrency", requests=6, created=1, conflicts=codes.count(409))

@@ -134,6 +134,7 @@ def _metrics(per: list[dict[str, Any]], latencies: list[float], cpu: list[float]
     exact = sum(r["exact"] for r in per)
     structure = sum(r["structure_exact"] for r in per)
     total_ok = sum(r["total_ok"] for r in per)
+    tax_ok = sum(r["tax_groups_ok"] for r in per)
     return {
         "samples": n,
         "line_recall": matched / label_lines if label_lines else None,
@@ -144,6 +145,8 @@ def _metrics(per: list[dict[str, Any]], latencies: list[float], cpu: list[float]
         "structure_exact_ci95": wilson(structure, n),
         "total_correct_rate": total_ok / n if n else None,
         "total_correct_ci95": wilson(total_ok, n),
+        # 税区分(8% / 10%)の一致。比較のゲート(HIGHER_IS_BETTER)には入れない(過去の結果に無い指標のため)
+        "tax_groups_ok_rate": tax_ok / n if n else None,
         "amount_error_rate": sum(r["wrong_amounts"] for r in per) / pred_lines if pred_lines else None,
         "latency_ms_mean": statistics.fmean(latencies) if latencies else None,
         "latency_ms_p95": sorted(latencies)[int(0.95 * (len(latencies) - 1))] if latencies else None,
@@ -206,6 +209,13 @@ def evaluate(root: Path, adapter: OcrAdapter | None, *, low_confidence: float, r
         per.append(r)
     if len(cache_keys) > 1:
         raise EvalBlocked("異なるモデル・前処理のキャッシュが混在しています。OCR を実行し直してください")
+    # 実レシートの調整用(tune)と最終評価用(holdout)に同じ画像があると、holdout で成功を宣言できない
+    splits: dict[str, set[str]] = {"tune": set(), "holdout": set()}
+    for (_, label), digest in zip(samples, image_hashes, strict=True):
+        if _label_source(label) == "real_ja" and label.get("split") in splits:
+            splits[label["split"]].add(digest)
+    if splits["tune"] & splits["holdout"]:
+        raise EvalBlocked("同じ実レシートの画像が tune と holdout の両方にあります(分割の汚染)")
 
     by_source = {s: _metrics([r for r in per if r["source"] == s], [], []) for s in SOURCES
                  if any(r["source"] == s for r in per)}
@@ -215,7 +225,7 @@ def evaluate(root: Path, adapter: OcrAdapter | None, *, low_confidence: float, r
     n = len(per)
     status = "blocked" if n == 0 else "insufficient" if n < min_samples else "ok"
     label_versions = Counter(str(lbl.get("generator") or lbl.get("label_version") or "unknown") for _, lbl in samples)
-    return {
+    out: dict[str, Any] = {
         "status": status,
         "min_samples": min_samples,
         "metrics": _metrics(per, latencies, cpu),
@@ -235,10 +245,34 @@ def evaluate(root: Path, adapter: OcrAdapter | None, *, low_confidence: float, r
         },
         "parser_version": PARSER_VERSION,
         "model": model,
+        "release_gates": None,  # 下で設定(この関数の結果を使うため)
         "samples": per,
         "note": ("合成データ(synthetic)・公開データ(public)の結果は日本語の実レシートでの精度を表しません。"
                  "実レシートの精度は real_ja の holdout だけで判断します"),
     }
+    out["release_gates"] = release_gates(out, min_samples=min_samples)
+    return out
+
+
+# 商用公開の精度の閾値はプロダクト責任者が未決定(OWNER_APPROVAL_REQUIRED)。決まるまで OCR_RELEASE は BLOCKED
+RELEASE_THRESHOLDS: dict[str, float] | None = None
+
+
+def release_gates(result: dict[str, Any], *, min_samples: int = DEFAULT_MIN_SAMPLES,
+                  thresholds: dict[str, float] | None = None) -> dict[str, Any]:
+    """実レシートの最終評価(real_ja の holdout)だけで判定する。合成・公開データの結果では PASS にしない。"""
+    holdout = result.get("by_source", {}).get("real_ja_holdout")
+    n = holdout["samples"] if holdout else 0
+    real = "BLOCKED" if n == 0 else "INSUFFICIENT" if n < min_samples else "MEASURED"
+    limits = thresholds if thresholds is not None else RELEASE_THRESHOLDS
+    if real != "MEASURED":
+        release, reasons = "BLOCKED", [f"real_ja の holdout が {n} 件(必要 {min_samples} 件)"]
+    elif limits is None:
+        release, reasons = "BLOCKED", ["商用の精度の閾値が未決定です(OWNER_APPROVAL_REQUIRED)"]
+    else:
+        reasons = [f"{k}: {holdout[k]} < {v}" for k, v in limits.items() if holdout.get(k) is None or holdout[k] < v]
+        release = "FAIL" if reasons else "PASS"
+    return {"OCR_REAL_HOLDOUT": real, "real_ja_holdout_samples": n, "OCR_RELEASE": release, "reasons": reasons}
 
 
 def compare(candidate: dict[str, Any], baseline: dict[str, Any], tolerance: float = 0.0) -> dict[str, Any]:

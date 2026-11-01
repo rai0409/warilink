@@ -66,6 +66,7 @@ const REASON_LABEL: Record<string, string> = {
   REFUND: "返品・取消の行",
   TAX_GROUP_INFERRED: "軽減税率の記号が読めず、税額から税率を推定",
   BARE_AMOUNT: "¥ の付いていない数字を金額として読み取り",
+  TAX_GROUP_UNVERIFIED: "税率を印字された税額で確かめられなかった",
 };
 
 const RULE_LABEL: Record<RuleType, string> = {

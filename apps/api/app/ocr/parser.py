@@ -17,7 +17,7 @@ from typing import Any
 from app.ocr.tokens import OcrToken
 
 # 0.2.0: 途中の合計で止めない(全行から合計の候補を集める)・ポイントの付与/利用/充当の区別・返品・印字点数の照合
-PARSER_VERSION = "rule-ja-0.3.0"
+PARSER_VERSION = "rule-ja-0.3.1"
 LOW_CONFIDENCE = 0.90
 
 # ---------------------------------------------------------------- 正規化・行の組み立て
@@ -154,7 +154,8 @@ def _infer_tax_groups(items: list[DraftItem], adjs: list[DraftAdjustment]) -> bo
     found: list[int] = []
     for mask in range(1, 1 << len(items)):
         s8 = sum(it.line_minor for k, it in enumerate(items) if mask >> k & 1)
-        if abs(s8 * 8 / 100 - taxes["8"]) < 1 and abs((total - s8) * 10 / 100 - taxes["10"]) < 1:
+        # 整数だけで比べる(|s8 × 8% − 税額| < 1 円 ⇔ |s8 × 8 − 税額 × 100| < 100)。浮動小数点の誤差で境界が揺れない
+        if abs(s8 * 8 - taxes["8"] * 100) < 100 and abs((total - s8) * 10 - taxes["10"] * 100) < 100:
             found.append(mask)
             if len(found) > 1:
                 return False
@@ -165,6 +166,16 @@ def _infer_tax_groups(items: list[DraftItem], adjs: list[DraftAdjustment]) -> bo
         it.needs_review = True
         it.reasons.append("TAX_GROUP_INFERRED")
     return True
+
+
+def _check_tax_groups(items: list[DraftItem], adjs: list[DraftAdjustment]) -> bool | None:
+    """商品の税区分が、印字された 8%・10% の外税額と合うか(±1 円未満、整数で比較)。確かめられなければ None。"""
+    taxes = {a.tax_group: a.amount_minor for a in adjs if a.kind == "tax" and a.tax_group in ("8", "10")}
+    if set(taxes) != {"8", "10"} or any(a.kind != "tax" for a in adjs):
+        return None
+    s8 = sum(i.line_minor for i in items if i.tax_group == "8")
+    s10 = sum(i.line_minor for i in items if i.tax_group == "10")
+    return abs(s8 * 8 - taxes["8"] * 100) < 100 and abs(s10 * 10 - taxes["10"] * 100) < 100
 
 
 # ---------------------------------------------------------------- 行の役割
@@ -485,9 +496,34 @@ def parse_receipt(tokens: list[OcrToken], *, low_confidence: float = LOW_CONFIDE
     # 軽減税率の記号がある場合、8% と 10% の両方の税行か、軽減税率の凡例があれば記号なしの商品を 10% とみなす
     # (どちらも無ければ記号なしの商品は不明のまま。下書きで利用者が確認する)
     if ({"8", "10"} <= rates_seen or reduced_legend_seen) and any(i.tax_group == "8" for i in items):
-        for it in items:
-            if it.tax_group is None:
-                it.tax_group = "10"
+        assumed = [it for it in items if it.tax_group is None]
+        for it in assumed:
+            it.tax_group = "10"
+        check = _check_tax_groups(items, adjs)
+        if check is False and assumed:
+            # 印字された 8%・10% の税額と合わない = 「※」の読み落としで 8% の商品を 10% にした可能性。黙って確定しない
+            assumed_ids = {id(i) for i in assumed}
+            marked = {id(i) for i in items if id(i) not in assumed_ids}
+            for it in assumed:
+                it.tax_group = None
+            if _infer_tax_groups(items, adjs) and all(i.tax_group == "8" for i in items if id(i) in marked):
+                warnings.append({"code": "TAX_GROUP_INFERRED",
+                                 "message": "軽減税率の記号の一部を読み取れなかったため、税額から 8% と 10% の商品を"
+                                            "推定しました。確認してください"})
+            else:
+                for it in items:
+                    if id(it) not in marked:
+                        it.tax_group = None
+                        it.needs_review = True
+                        if "TAX_GROUP_UNVERIFIED" not in it.reasons:
+                            it.reasons.append("TAX_GROUP_UNVERIFIED")
+                warnings.append({"code": "TAX_GROUP_MISMATCH",
+                                 "message": "商品の税率と印字された税額が合いません。"
+                                            "記号の無い商品の税率を選んでください"})
+        elif check is None and assumed and reduced_legend_seen:
+            # 税額の内訳が無く確かめられない: 記号の読み落としがあれば 8% の商品が 10% のままになる
+            warnings.append({"code": "TAX_GROUP_ASSUMED",
+                             "message": "「※」の無い商品を 10% としました。記号の読み落としが無いか確認してください"})
     elif not any(i.tax_group for i in items) and _infer_tax_groups(items, adjs):
         warnings.append({"code": "TAX_GROUP_INFERRED",
                          "message": "軽減税率の記号を読み取れなかったため、税額から 8% と 10% の商品を推定しました。"

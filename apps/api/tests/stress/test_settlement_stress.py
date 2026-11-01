@@ -124,3 +124,43 @@ def test_time_limit_falls_back_to_greedy():
     record("time_limit_fallback", cases=200, fell_back=fallbacks, participant_limit_checked=True,
            overshoot_p50_ms=round(sorted(overshoot)[len(overshoot) // 2], 1) if overshoot else None,
            overshoot_max_ms=round(max(overshoot), 1) if overshoot else None)
+
+
+def test_refunds_zero_amounts_and_member_limit():
+    """返品(負の支出)・0 円・API の上限(100 人)でも、残高の和は 0 で、精算案どおりに送金すると全員 0。"""
+    rng = random.Random(SEED + 13)
+    rows = []
+    for n in (2, 20, 50, 100):
+        members = _members(n)
+        ledger = _ledger(rng, members, 500)
+        for e in range(200):  # 返品・取消(負の金額)と 0 円の支出を混ぜる
+            amount = rng.choice([0, -rng.randint(1, 50_000)])
+            payer = rng.choice(members)
+            sharers = rng.sample(members, rng.randint(1, n))
+            shares = split_simple(amount, "equal", dict.fromkeys(sharers, 1), f"r{e}")
+            ledger.append(ExpenseLedgerEntry(expense_id=f"r{e}", payers={payer: amount}, shares=shares))
+        bal = compute_balances(members, ledger)
+        assert sum(bal.values()) == 0
+        res = optimize_transfers(bal)
+        verify_transfers(bal, res.transfers)
+        assert all(t.amount_minor > 0 for t in res.transfers)
+        rows.append({"members": n, "method": res.method, "transfers": len(res.transfers)})
+    record("refunds_zero_member_limit", groups=rows)
+
+
+def test_slow_cpu_at_the_20_person_boundary():
+    """CPU が遅く上限時間に届かない場合を、上限を縮めて再現する。どちらの方法でも金額は正しく、厳密解は貪欲法以下。"""
+    rng = random.Random(SEED + 14)
+    outcomes: dict[str, int] = {}
+    for case in range(30):
+        vals = [rng.randint(-10**6, 10**6) for _ in range(19)]
+        vals.append(-sum(vals))
+        bal = {f"m{i:02d}": v for i, v in enumerate(vals)}
+        greedy = len(greedy_transfers(bal))
+        for limit_ms in (50, 200, 1500):
+            res = optimize_transfers(bal, time_limit_ms=limit_ms)
+            verify_transfers(bal, res.transfers)
+            assert len(res.transfers) <= greedy, case
+            key = f"{limit_ms}ms:{res.method}"
+            outcomes[key] = outcomes.get(key, 0) + 1
+    record("slow_cpu_20_boundary", cases=30, outcomes=outcomes)
