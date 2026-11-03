@@ -422,3 +422,4 @@
 - ホーム: 送金を実行しないこと、送金の申告と受け取りの確認はどちらも入金を保証しないこと、登録しない場合はブラウザのデータを消すと元に戻せない場合があることを示す。
 - テスト: `apps/web/e2e/policy.spec.ts`(`/plans` を本番の既定値=読み取り・広告 OFF に差し替えて確認)。
 - ゲートの一覧と判定: `docs/FREE_RELEASE_GATES.md`(`FREE_RELEASE=NO_GO`)。
+- 実行記録(2026-11-03、コミット f4bdab8、ローカル macOS arm64、使い捨て DB): API の pytest 376 件成功、web の typecheck・build 成功、E2E 42 件成功(隔離した E2E 用 DB)。独立レビュー(P01+P02 と P05)はどちらも PASS。
