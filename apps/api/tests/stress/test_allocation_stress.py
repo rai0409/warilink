@@ -18,7 +18,7 @@ from app.domain.allocation import (
     verify_receipt,
 )
 
-from .support import SEED, Timer, record
+from .support import SEED, Timer, hamilton_violations, oracle_apportion, oracle_receipt, record
 
 pytestmark = pytest.mark.stress
 
@@ -191,3 +191,66 @@ def test_one_yen_mismatch_10k():
     record("one_yen_mismatch", cases=10_000, detected=10_000, auto_corrected=0,
            resolved_by_explicit_difference_line=10_000 - needs_rule, needed_explicit_rule=needs_rule,
            **timer.summary())
+
+
+def test_random_splits_match_oracle_50k():
+    """誰が 1 円多く払うかまで、独立オラクル(Fraction + 仕様どおりの同順位の決め方)と一致させる。
+    少人数・小さい金額(同順位が多い)と大きい金額を混ぜる。"""
+    rng = random.Random(SEED + 3)
+    timer = Timer()
+    ties = 0
+    for case in range(50_000):
+        mode = ("equal", "weight", "percentage")[case % 3]
+        members = _members(rng.randint(1, 12))
+        total = rng.choice([rng.randint(-30, 30), rng.randint(-10_000, 10_000), rng.randint(1, 10**12)])
+        shares = _shares(rng, mode, members, total)
+        seed = f"o{case}"
+        with timer.measure():
+            got = split_simple(total, mode, shares, seed)  # type: ignore[arg-type]
+        weights = dict.fromkeys(shares, 1) if mode == "equal" else shares
+        assert got == oracle_apportion(total, weights, seed), (case, mode, total, shares)
+        assert hamilton_violations(got, total, weights) == [], case
+        w_sum = sum(weights.values())
+        fracs = [Fraction(abs(total) * w, w_sum) % 1 for w in weights.values()]
+        ties += len(fracs) != len(set(fracs))
+    record("oracle_random_splits", cases=50_000, mismatches=0, cases_with_tied_remainders=ties,
+           **timer.summary())
+
+
+def _scoped_receipt(rng: random.Random, members: list[str]) -> ReceiptSpec:
+    spec = _big_receipt(rng, rng.randint(1, 40), members)
+    items = [it for it in spec.items if it.line_minor > 0] or [
+        Item("only", "商品", 1_000, 1, "10", ItemAllocation("equal", {members[0]: 1}))]
+    ids = [it.id for it in items]
+    adjustments = [a for a in spec.adjustments if a.rule.scope_tax_group is None]
+    for g in ("8", "10"):
+        base = sum(it.line_minor for it in items if it.tax_group == g)
+        if base:
+            adjustments.append(Adjustment(f"tax{g}", "tax", base * int(g) // 100 + rng.randint(-1, 1),
+                                          f"消費税{g}%", AdjustmentRule(scope_tax_group=g)))
+    picked = tuple(rng.sample(ids, rng.randint(1, len(ids))))
+    adjustments.append(Adjustment("scoped", "discount", -rng.randint(0, 999), "対象商品の値引き",
+                                  AdjustmentRule(scope_item_ids=picked)))
+    adjustments.append(Adjustment("all", "service_charge", rng.randint(0, 9_999), "サービス料", AdjustmentRule()))
+    total = sum(it.line_minor for it in items) + sum(a.amount_minor for a in adjustments)
+    return ReceiptSpec(items, adjustments, total)
+
+
+def test_itemized_receipts_match_oracle_3k():
+    """税率グループ・対象商品指定の比例配分・均等・メンバー指定・金額指定を含むレシートを、独立オラクルと
+    商品ごと・調整ごと・メンバー別に照合する。返品は比例配分の対象外のため、ここでは正の商品だけ。"""
+    rng = random.Random(SEED + 4)
+    timer = Timer()
+    lines = 0
+    for case in range(3_000):
+        members = _members(rng.randint(2, 20))
+        spec = _scoped_receipt(rng, members)
+        seed = f"r{case}"
+        with timer.measure():
+            r = compute_receipt(spec, seed)
+        assert r.ok, (case, r.issues[:2])
+        want = oracle_receipt(spec, seed)
+        assert {**r.item_allocations, **r.adjustment_allocations} == want["allocations"], case
+        assert r.member_totals == want["member_totals"], case
+        lines += len(spec.items) + len(spec.adjustments)
+    record("oracle_itemized_receipts", cases=3_000, lines=lines, mismatches=0, **timer.summary())

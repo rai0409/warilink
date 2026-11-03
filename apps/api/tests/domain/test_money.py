@@ -2,10 +2,12 @@ import random
 from fractions import Fraction
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from app.domain.money import MAX_ABS_AMOUNT, MoneyError, apportion
+
+from ..stress.support import hamilton_violations, oracle_apportion
 
 amounts = st.integers(min_value=-MAX_ABS_AMOUNT, max_value=MAX_ABS_AMOUNT)
 weight_maps = st.dictionaries(
@@ -88,3 +90,39 @@ def test_apportion_large_random_cases():
             continue
         total = rng.randint(-10**9, 10**9)
         assert sum(apportion(total, weights, str(_)).values()) == total
+
+
+# ---- 独立オラクル(Fraction の理想値と仕様どおりの同順位の決め方)との完全一致
+
+
+@settings(max_examples=3000, deadline=None)
+@given(
+    total=st.integers(-2_000, 2_000),
+    weights=st.dictionaries(st.sampled_from(list("ABCDEFGH")), st.integers(0, 6), min_size=1),
+    seed=st.text(max_size=4),
+)
+def test_apportion_matches_fraction_oracle_small(total, weights, seed):
+    """小さい金額・小さい重みは同順位(剰余が等しい人)が多い。誰が 1 円多く払うかまで一致させる。"""
+    assume(sum(weights.values()) > 0)
+    got = apportion(total, weights, seed)
+    assert got == oracle_apportion(total, weights, seed)
+    assert hamilton_violations(got, total, weights) == []
+
+
+@settings(max_examples=1000, deadline=None)
+@given(
+    total=st.sampled_from([-MAX_ABS_AMOUNT, -(10**12) + 1, -1, 0, 1, 10**12 - 1, MAX_ABS_AMOUNT]),
+    weights=st.dictionaries(st.text(min_size=1, max_size=3), st.integers(0, 10**6), min_size=1, max_size=12),
+)
+def test_apportion_matches_oracle_at_bounds(total, weights):
+    assume(sum(weights.values()) > 0)
+    got = apportion(total, weights, "b")
+    assert got == oracle_apportion(total, weights, "b")
+    assert hamilton_violations(got, total, weights) == []
+
+
+def test_apportion_bound_is_inclusive():
+    assert sum(apportion(MAX_ABS_AMOUNT, {"a": 1, "b": 2}, "s").values()) == MAX_ABS_AMOUNT
+    with pytest.raises(MoneyError) as e:
+        apportion(MAX_ABS_AMOUNT + 1, {"a": 1}, "s")
+    assert e.value.code == "AMOUNT_OUT_OF_RANGE"

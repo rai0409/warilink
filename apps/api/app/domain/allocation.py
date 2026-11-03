@@ -186,6 +186,15 @@ def _allocate_adjustment(
             raise MoneyError("ADJUSTMENT_RULE_INVALID", "配分先のメンバーを選んでください")
         return apportion(adj.amount_minor, {m: 1 for m in rule.member_ids}, seed)
 
+    if rule.scope_item_ids is not None:
+        # 対象に指定した商品が明細に無い(読み取り後に商品行を消した等)。残りの商品の負担者へ黙って配り直さない
+        known = {i.id for i in spec.items}
+        dangling = sorted(set(rule.scope_item_ids) - known)
+        if dangling:
+            raise MoneyError(
+                "ADJUSTMENT_RULE_INVALID", "対象に指定した商品が明細にありません。対象を選び直してください",
+                items=dangling,
+            )
     scope = _scope_items(spec, rule)
     if not scope:
         raise MoneyError("ADJUSTMENT_RULE_INVALID", "配分対象の商品がありません")

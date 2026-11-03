@@ -50,7 +50,15 @@ export default function HomePage() {
             </List>
           </>
         )}
-        <Muted className="mt-auto pt-16">登録不要で使えます</Muted>
+        <div className="mt-auto space-y-1 pt-16">
+          <Muted>登録不要・無料で使えます</Muted>
+          <Muted className="text-[12px]">
+            WariLinkは送金を実行しません。「送金の申告」は支払う人の自己申告、「受け取りの確認」は受け取る人の手動の確認で、どちらも入金を保証するものではありません。
+          </Muted>
+          <Muted className="text-[12px]">
+            登録せずに使う場合、グループはこのブラウザに結びつきます。ブラウザのデータを消したり端末を変えたりすると、元に戻せない場合があります。
+          </Muted>
+        </div>
       </Body>
     </Screen>
   );
