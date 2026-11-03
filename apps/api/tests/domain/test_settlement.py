@@ -262,3 +262,50 @@ def test_balances_multi_expense_and_partial_settlement(data):
     again = optimize_transfers(residual)
     verify_transfers(residual, again.transfers)
     assert naive_transfer_count(entries) >= 0
+
+
+# ---- 表示契約・対称性・境界(独立した全探索 brute_force_min_transfers と照合)
+
+
+@settings(max_examples=500, deadline=None)
+@given(bal=zero_sum_balances(max_n=7, max_abs=5), data=st.data())
+def test_min_count_is_symmetric_under_sign_flip_and_renaming(bal, data):
+    """全員の符号を反転しても、名前と並び順を入れ替えても、最小件数は変わらない(1 円単位・同額が多い入力)。"""
+    expected = brute_force_min_transfers(list(bal.values()))
+    flipped = {m: -v for m, v in bal.items()}
+    names = data.draw(st.permutations([f"x{i}" for i in range(len(bal))]))
+    renamed = dict(zip(names, bal.values(), strict=True))
+    for b in (bal, flipped, renamed):
+        res = optimize_transfers(b)
+        assert res.is_exact_minimum and res.minimum_transfer_count == len(res.transfers) == expected
+        verify_transfers(b, res.transfers)
+
+
+def test_one_yen_balances_are_settled_exactly():
+    bal = {"A": 1, "B": 1, "C": -1, "D": -1, "E": 2, "F": -2}
+    res = optimize_transfers(bal)
+    assert res.is_exact_minimum and len(res.transfers) == 3 == brute_force_min_transfers(list(bal.values()))
+    verify_transfers(bal, res.transfers)
+
+
+def test_21_people_use_greedy_and_never_claim_minimum():
+    """非ゼロ残高が 21 人(+a/-a の組なし)は厳密解の対象外。最小とは表示せず、件数も確定値を返さない。"""
+    vals = [37 * 2**k for k in range(20)]
+    vals.append(-sum(vals))
+    bal = {f"m{i:02d}": v for i, v in enumerate(vals)}
+    res = optimize_transfers(bal)
+    assert res.method == "greedy_fallback" and res.fallback_reason == "participant_limit"
+    assert not res.is_exact_minimum and res.minimum_transfer_count is None
+    assert res.participant_count == 21
+    verify_transfers(bal, res.transfers)
+
+
+def test_balances_beyond_single_amount_limit_are_still_settled():
+    """1 件の上限(10^12 円)の支出が 2 件あると、残高は 2×10^12 円になる。入力としては正しいので、
+    精算案は作れる(JS の安全整数 2^53-1 よりは十分小さい)。"""
+    entries = [ExpenseLedgerEntry(f"e{i}", {"A": 10**12}, {"B": 10**12}) for i in range(2)]
+    bal = compute_balances(["A", "B"], entries)
+    assert bal == {"A": 2 * 10**12, "B": -2 * 10**12}
+    res = optimize_transfers(bal)
+    assert res.transfers == [Transfer("B", "A", 2 * 10**12)]
+    verify_transfers(bal, res.transfers)

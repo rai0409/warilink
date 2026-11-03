@@ -27,6 +27,8 @@ from .money import InvariantViolation, MoneyError, apportion, ensure_int
 
 DEFAULT_EXACT_MAX_PARTICIPANTS = 20
 DEFAULT_TIME_LIMIT_MS = 1500
+# 純残高は複数の支出の合計なので、1 件の上限(MAX_ABS_AMOUNT)を超えうる。出力は JS の安全整数の範囲に限る
+MAX_SAFE_BALANCE = 2**53 - 1
 
 ASSUMPTIONS: dict[str, object] = {
     "currency": "JPY",
@@ -240,7 +242,10 @@ def optimize_transfers(
 ) -> OptimizationResult:
     start = time.perf_counter()
     for m, v in balances.items():
-        ensure_int(v, f"balance[{m}]")
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise MoneyError("INVALID_AMOUNT", f"balance[{m}] は整数でなければなりません", field=f"balance[{m}]")
+        if abs(v) > MAX_SAFE_BALANCE:
+            raise MoneyError("AMOUNT_OUT_OF_RANGE", f"balance[{m}] が上限を超えています", field=f"balance[{m}]")
     if sum(balances.values()) != 0:
         raise MoneyError("BALANCE_SUM_NONZERO", "純残高の総和が0ではありません")
 

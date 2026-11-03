@@ -138,3 +138,83 @@ def test_settlement_confirmation_is_serialized_and_idempotent(user_factory):
     assert confirm(keys[0]) == codes[0]
     assert len(owner.get(f"/groups/{pid}/settlement-batches").json()) == len(batches)
     record("api_settlement_concurrency", requests=6, created=1, conflicts=codes.count(409))
+
+
+def _all_ints(obj):
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, int):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _all_ints(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _all_ints(v)
+
+
+def test_amount_limit_and_js_safe_output(user_factory):
+    """1 件の上限は 10^12 円(超えると 422)。上限の支出が複数あっても精算案は作れ、応答の整数は
+    すべて JS の安全整数(2^53-1)に収まる。"""
+    owner = user_factory()
+    g, ids = make_group(owner, names=["Bさん", "Cさん"], title="上限")
+    pid = g["public_id"]
+    a, b, c = ids["Aさん"], ids["Bさん"], ids["Cさん"]
+
+    def body(amount, payer, sharer):
+        return {"title": "上限", "amount_minor": amount, "payers": [{"member_id": payer, "amount_minor": amount}],
+                "split": {"mode": "equal", "shares": [{"member_id": sharer, "value": 1}]}}
+
+    r = owner.post(f"/groups/{pid}/expenses", json=body(10**12 + 1, a, b))
+    assert r.status_code == 422, r.text
+    for _ in range(3):
+        r = owner.post(f"/groups/{pid}/expenses", json=body(10**12, a, b))
+        assert r.status_code == 201, r.text
+    r = owner.post(f"/groups/{pid}/expenses", json=body(10**12, c, a))
+    assert r.status_code == 201, r.text
+    r = owner.post(f"/groups/{pid}/settlements/preview")
+    assert r.status_code == 200, r.text
+    plan = r.json()
+    net = {x["member_id"]: x["net_minor"] for x in plan["balances"]}
+    assert net == {a: 2 * 10**12, b: -3 * 10**12, c: 10**12}
+    assert max(abs(v) for v in _all_ints(plan)) <= 2**53 - 1
+    assert sorted((t["from_member_id"], t["to_member_id"], t["amount_minor"]) for t in plan["transfers"]) == sorted(
+        [(b, a, 2 * 10**12), (b, c, 10**12)])
+    record("api_amount_limit", per_expense_limit=10**12, max_balance=3 * 10**12, status=r.status_code)
+
+
+@pytest.mark.parametrize("upper", [False, True])
+def test_itemized_preview_matches_saved_shares(user_factory, upper):
+    """プレビューで見せた負担額と、登録後に保存された負担額が 1 円単位で一致する(同順位の端数が多い入力)。
+    画面は小文字の UUID を送るが、大文字で送られても同じ支出 ID として扱われる。"""
+    import uuid
+
+    owner = user_factory()
+    g, ids = make_group(owner, names=["Bさん", "Cさん", "Dさん", "Eさん", "Fさん"], title="端数")
+    pid = g["public_id"]
+    members = list(ids.values())
+    rng = random.Random(SEED + 22)
+    items = [{"id": f"i{i}", "name": f"商品{i}", "line_minor": rng.choice([100, 101, 1_000, 1_001]), "quantity": 1,
+              "tax_group": "10", "allocation": {"mode": "equal", "shares": [
+                  {"member_id": m, "value": 1} for m in rng.sample(members, rng.randint(2, 6))]}}
+             for i in range(20)]
+    base = sum(i["line_minor"] for i in items)
+    adjustments = [{"id": "t", "kind": "tax", "amount_minor": base // 10, "rule": {"type": "proportional",
+                                                                                     "scope_tax_group": "10"}},
+                   {"id": "d", "kind": "discount", "amount_minor": -7, "rule": {"type": "equal"}}]
+    total = base + base // 10 - 7
+    eid = str(uuid.uuid4())
+    if upper:
+        eid = eid.upper()
+    spec = {"title": "端数", "amount_minor": total, "payers": [{"member_id": members[0], "amount_minor": total}],
+            "split": {"mode": "itemized", "receipt": {"receipt_total_minor": total, "items": items,
+                                                       "adjustments": adjustments}}}
+    r = owner.post(f"/groups/{pid}/expenses/preview", json={**spec, "expense_id": eid})
+    assert r.status_code == 200, r.text
+    preview = r.json()["breakdown"]
+    assert preview["ok"], preview["issues"]
+    r = owner.post(f"/groups/{pid}/expenses", json={**spec, "client_expense_id": eid})
+    assert r.status_code == 201, r.text
+    saved = r.json()
+    assert saved["shares"] == preview["shares"]
+    assert saved["breakdown"]["adjustment_allocations"] == preview["adjustment_allocations"]

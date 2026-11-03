@@ -15,6 +15,8 @@ from app.domain.allocation import (
 )
 from app.domain.money import MoneyError
 
+from ..stress.support import hamilton_violations, oracle_apportion, oracle_receipt
+
 MEMBERS = ["A", "B", "C", "D", "E", "F"]
 
 
@@ -284,3 +286,142 @@ def test_expense_payer_mismatch_blocks():
     with pytest.raises(MoneyError) as e:
         r.require_valid()
     assert e.value.code == "PAYER_SUM_MISMATCH"
+
+
+# ---- 独立オラクル(tests/stress/support.py)との一致: 合計だけでなく「誰が何円か」まで照合する
+
+
+def test_hand_computed_proportional_tax_with_one_yen_remainder():
+    """手計算の例。税 291 円を負担額 1400:400:1100 で比例配分すると理想値は 140.48 / 40.14 / 110.38。
+    整数部 290 円、残り 1 円は小数部の最も大きい A へ。"""
+    spec = ReceiptSpec(
+        items=[
+            Item("a", "唐揚げ", 1200, 1, "10", ItemAllocation("equal", {"A": 1, "B": 1, "C": 1})),
+            Item("b", "刺身", 1700, 1, "10", ItemAllocation("exact", {"A": 1000, "C": 700})),
+        ],
+        adjustments=[Adjustment("t", "tax", 291, "消費税10%", AdjustmentRule("proportional", scope_tax_group="10"))],
+        receipt_total_minor=3191,
+    )
+    r = compute_receipt(spec, "hand")
+    assert r.ok, r.issues
+    assert r.adjustment_allocations["t"] == {"A": 141, "B": 40, "C": 110}
+    assert r.member_totals == {"A": 1541, "B": 440, "C": 1210}
+
+
+@settings(max_examples=2000, deadline=None)
+@given(
+    total=st.integers(-50_000, 50_000),
+    members=st.lists(st.sampled_from(MEMBERS), min_size=1, unique=True),
+    mode=st.sampled_from(["equal", "weight", "units", "percentage"]),
+    data=st.data(),
+    seed=st.text(max_size=4),
+)
+def test_split_simple_matches_fraction_oracle(total, members, mode, data, seed):
+    if mode == "equal":
+        shares = dict.fromkeys(members, 1)
+        weights = shares
+    elif mode == "percentage":
+        cuts = sorted(data.draw(st.lists(st.integers(0, 10_000), min_size=len(members) - 1,
+                                         max_size=len(members) - 1)))
+        shares = dict(zip(members, [b - a for a, b in zip([0, *cuts], [*cuts, 10_000], strict=True)], strict=True))
+        weights = shares
+    else:
+        shares = {m: data.draw(st.integers(0, 7)) for m in members}
+        assume(sum(shares.values()) > 0)
+        weights = shares
+    got = split_simple(total, mode, shares, seed)
+    assert got == oracle_apportion(total, weights, seed)
+    assert hamilton_violations(got, total, weights) == []
+
+
+@st.composite
+def scoped_receipts(draw):
+    """比例配分(全商品・税率グループ・商品指定)を含む、正しいレシート。基準額が負にならないよう商品は正の金額。"""
+    members = draw(st.lists(st.sampled_from(MEMBERS), min_size=1, max_size=6, unique=True))
+    items = []
+    for i in range(draw(st.integers(1, 12))):
+        qty = draw(st.integers(1, 6))
+        line = draw(st.integers(1, 30_000))
+        who = draw(st.lists(st.sampled_from(members), min_size=1, unique=True))
+        mode = draw(st.sampled_from(["equal", "weight", "units"]))
+        if mode == "equal":
+            shares = dict.fromkeys(who, 1)
+        elif mode == "weight":
+            shares = {m: draw(st.integers(1, 5)) for m in who}
+        else:
+            shares = dict.fromkeys(who, 0)
+            for k in range(qty):
+                shares[who[k % len(who)]] += 1
+        items.append(Item(f"i{i}", f"item{i}", line, qty, draw(st.sampled_from(["8", "10"])),
+                          ItemAllocation(mode, shares)))
+    adjustments = []
+    for j in range(draw(st.integers(0, 5))):
+        kind = draw(st.sampled_from(["tax", "service_charge", "discount", "coupon", "rounding"]))
+        amt = draw(st.integers(0, 5_000))
+        if kind in ("discount", "coupon"):
+            amt = -amt
+        elif kind == "rounding":
+            amt = draw(st.integers(-3, 3))
+        scope = draw(st.sampled_from(["all", "group", "items", "equal", "members"]))
+        if scope == "group":
+            g = draw(st.sampled_from(["8", "10"]))
+            assume(any(it.tax_group == g for it in items))
+            rule = AdjustmentRule("proportional", scope_tax_group=g)
+        elif scope == "items":
+            ids = draw(st.lists(st.sampled_from([it.id for it in items]), min_size=1, unique=True))
+            rule = AdjustmentRule("proportional", scope_item_ids=tuple(ids))
+        elif scope == "equal":
+            rule = AdjustmentRule("equal")
+        elif scope == "members":
+            rule = AdjustmentRule("members", member_ids=tuple(draw(
+                st.lists(st.sampled_from(members), min_size=1, unique=True))))
+        else:
+            rule = AdjustmentRule("proportional")
+        adjustments.append(Adjustment(f"a{j}", kind, amt, rule=rule))
+    total = sum(i.line_minor for i in items) + sum(a.amount_minor for a in adjustments)
+    return ReceiptSpec(items, adjustments, total), members
+
+
+@settings(max_examples=1500, deadline=None)
+@given(rm=scoped_receipts(), seed=st.text(max_size=4))
+def test_itemized_matches_independent_oracle(rm, seed):
+    spec, members = rm
+    r = compute_receipt(spec, seed)
+    assert r.ok, r.issues
+    want = oracle_receipt(spec, seed)
+    assert {**r.item_allocations, **r.adjustment_allocations} == want["allocations"]
+    assert r.member_totals == want["member_totals"]
+    # 支出として登録したときの負担額は、0 円の人を除いた同じ値(プレビューと登録は同じ関数・同じ種)
+    exp = compute_expense(
+        ExpenseSpec(spec.receipt_total_minor, {members[0]: spec.receipt_total_minor}, "itemized", receipt=spec),
+        seed, set(members))
+    assert exp.ok and exp.receipt is not None and exp.receipt.ok
+    assert exp.shares == {m: v for m, v in want["member_totals"].items() if v != 0}
+
+
+@settings(max_examples=300, deadline=None)
+@given(rm=scoped_receipts(), data=st.data())
+def test_itemized_result_does_not_depend_on_line_order(rm, data):
+    spec, _ = rm
+    items = data.draw(st.permutations(list(spec.items)))
+    adjs = data.draw(st.permutations(list(spec.adjustments)))
+    a = compute_receipt(spec, "o")
+    b = compute_receipt(ReceiptSpec(items, adjs, spec.receipt_total_minor), "o")
+    assert a.member_totals == b.member_totals
+    assert a.adjustment_allocations == b.adjustment_allocations
+
+
+def test_adjustment_scoped_to_missing_item_is_reported_not_redistributed():
+    """割引の対象に指定した商品が明細に無い(読み取り後に商品行を消した等)。黙って残りの商品の負担者へ
+    配り直さず、問題として返す。全部が無い場合はすでに ADJUSTMENT_RULE_INVALID になる。"""
+    spec = ReceiptSpec(
+        items=[
+            Item("ramen", "ラーメン", 900, 1, None, ItemAllocation("equal", {"A": 1})),
+            Item("gyoza", "餃子", 400, 1, None, ItemAllocation("equal", {"B": 1})),
+        ],
+        adjustments=[Adjustment("d", "discount", -100, "餃子100円引き",
+                                AdjustmentRule("proportional", scope_item_ids=("gyoza_deleted", "ramen")))],
+        receipt_total_minor=1200,
+    )
+    r = compute_receipt(spec, "s")
+    assert "ADJUSTMENT_RULE_INVALID" in [i.code for i in r.issues], r.adjustment_allocations

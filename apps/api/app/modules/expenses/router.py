@@ -226,6 +226,17 @@ def group_stats(public_id: str, date_from: date | None = None, date_to: date | N
     )
 
 
+def _canonical_expense_id(value: str | None) -> str | None:
+    """登録時の端数配分の種は正規化した UUID 文字列(str(uuid))。プレビューも同じ表記にそろえ、大文字や
+    波括弧付きで送られても登録後と同じ配分になるようにする。UUID でない値はそのまま使う。"""
+    if not value:
+        return value
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return value
+
+
 @router.post("/preview", response_model=ExpensePreviewOut)
 def preview_expense(public_id: str, body: ExpensePreviewIn, db: Session = Depends(get_db),
                     ident: Identity = Depends(current_identity)) -> dict:
@@ -234,12 +245,12 @@ def preview_expense(public_id: str, body: ExpensePreviewIn, db: Session = Depend
     if body.split.mode == "itemized":
         require_feature("itemized_allocation")
     acc = load_group_access(db, public_id, ident)
-    seed = body.expense_id or "preview"
+    seed = _canonical_expense_id(body.expense_id) or "preview"
     res = service.compute(body, seed, _member_ids(db, acc.group))
     out: dict = {"breakdown": service.breakdown(res).model_dump(), "projected_settlement": None}
     if out["breakdown"]["ok"]:
         ledger = settle.load_ledger(db, acc.group)
-        ledger.entries = [e for e in ledger.entries if e.expense_id != body.expense_id]
+        ledger.entries = [e for e in ledger.entries if e.expense_id != seed]
         payers = {p.member_id: p.amount_minor for p in body.payers}
         ledger.entries.append(ExpenseLedgerEntry(seed, payers, res.shares))
         net, rows = settle.balance_rows(ledger)

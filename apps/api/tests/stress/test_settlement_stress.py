@@ -164,3 +164,49 @@ def test_slow_cpu_at_the_20_person_boundary():
             key = f"{limit_ms}ms:{res.method}"
             outcomes[key] = outcomes.get(key, 0) + 1
     record("slow_cpu_20_boundary", cases=30, outcomes=outcomes)
+
+
+def test_exact_9_to_16_people_vs_enumeration():
+    """全探索(8 人以下)より大きい 9〜16 人を、DP とは別手順の列挙オラクルと照合する。
+    同額・+a/-a の組・小さい金額(和0の部分集合が多い)を混ぜる。正しさだけを見るため時間制限は十分に取る。"""
+    from ..domain.test_settlement import enumerated_min_transfers
+
+    rng = random.Random(SEED + 15)
+    timer = Timer()
+    for case in range(300):
+        n = rng.randint(9, 16)
+        lim = rng.choice([3, 50, 100_000])
+        vals = [rng.randint(-lim, lim) for _ in range(n - 1)]
+        if case % 4 == 0:
+            vals[: n // 3] = [v for v in vals[: n // 6] for v in (v, -v)][: n // 3]
+        vals.append(-sum(vals))
+        bal = {f"m{i:02d}": v for i, v in enumerate(vals)}
+        with timer.measure():
+            res = optimize_transfers(bal, time_limit_ms=60_000)
+        assert res.is_exact_minimum, case
+        expected = enumerated_min_transfers([v for v in vals if v != 0])
+        assert res.minimum_transfer_count == len(res.transfers) == expected, (case, vals)
+        verify_transfers(bal, res.transfers)
+    record("exact_9_to_16_vs_enumeration", cases=300, mismatches=0, **timer.summary())
+
+
+def test_20_people_exact_timing_and_fallback_rate():
+    """+a/-a の組のない 20 人(DP の最悪に近い)を既定の上限で計算したときの所要時間と、貪欲法へ
+    切り替わった割合を記録する。時間は環境に依存するので合否にせず、金額と表示の契約だけを確かめる。"""
+    rng = random.Random(SEED + 16)
+    timer = Timer()
+    fallback = 0
+    for _ in range(20):
+        vals = [rng.randint(-10**6, 10**6) for _ in range(19)]
+        vals.append(-sum(vals))
+        bal = {f"m{i:02d}": v for i, v in enumerate(vals)}
+        with timer.measure():
+            res = optimize_transfers(bal)
+        verify_transfers(bal, res.transfers)
+        if res.is_exact_minimum:
+            assert res.minimum_transfer_count == len(res.transfers)
+        else:
+            assert res.fallback_reason == "time_limit" and res.minimum_transfer_count is None
+            fallback += 1
+    record("exact_20_people_default_limit", cases=20, fallback_count=fallback,
+           fallback_rate=round(fallback / 20, 3), **timer.summary())
