@@ -36,7 +36,14 @@ def test_roundtrip_any_size(size):
     dek, data = new_dek(), os.urandom(size)
     blob, meta = _enc(data, dek)
     assert _dec(blob, dek, meta) == data
-    assert data[:64] not in blob or size == 0  # 平文がそのまま入っていない
+    frames = max(1, (size + CHUNK_BYTES - 1) // CHUNK_BYTES)
+    assert len(blob) == size + frames * (4 + 16)
+
+    # 全サイズでGCM認証タグの改ざんを拒否する
+    tampered = bytearray(blob)
+    tampered[-1] ^= 1
+    with pytest.raises(BackupCryptoError):
+        _dec(bytes(tampered), dek, meta)
 
 
 def test_tampering_truncation_reordering_and_swapping_are_rejected():

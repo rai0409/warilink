@@ -82,8 +82,8 @@ class RetentionPolicyOut(BaseModel):
 
 
 class AutomaticDeletionOut(BaseModel):
-    # verified = 削除ジョブが直近 max_age_hours 以内に成功した。
-    # unverified = 成功の記録が無い・古い(この環境では期限を過ぎても消えていない可能性がある)
+    # verified = 未来ではない直近の成功が、失敗より厳密に新しい。
+    # unverified = 記録が無い・古い・未来、または同時以降に失敗した。
     status: Literal["verified", "unverified"]
     last_success_at: datetime | None
     last_failure_at: datetime | None
@@ -103,7 +103,10 @@ def retention(db: Session = Depends(get_db)) -> RetentionOut:
     s = get_settings()
     run = db.get(MaintenanceRun, RETENTION_JOB)
     last_ok = run.last_success_at if run else None
-    fresh = last_ok is not None and now() - last_ok <= timedelta(hours=AUTOMATIC_DELETION_MAX_AGE_HOURS)
+    last_failure = run.last_failure_at if run else None
+    age = now() - last_ok if last_ok is not None else None
+    fresh = (age is not None and timedelta(0) <= age <= timedelta(hours=AUTOMATIC_DELETION_MAX_AGE_HOURS)
+             and (last_failure is None or last_ok > last_failure))
     return RetentionOut(
         policies=[
             RetentionPolicyOut(key="receipt_images", days=s.receipt_image_retention_days),
