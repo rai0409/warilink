@@ -241,6 +241,13 @@ export function ReceiptEditor({
   const { preview, error: previewError, pending } = useExpensePreview(publicId, body, expenseId);
   const bd = preview?.breakdown;
 
+  /** 商品を削除する。その商品だけを対象にした値引き等からも外す(対象がすべて消えた調整は、全商品へ広げずに選び直してもらう) */
+  function removeItem(id: string) {
+    setItems((xs) => xs.filter((x) => x.id !== id));
+    setBulk((s) => { const n = new Set(s); n.delete(id); return n; });
+    setAdjs((xs) => xs.map((a) => (a.scopeItemIds?.includes(id) ? { ...a, scopeItemIds: a.scopeItemIds.filter((x) => x !== id) } : a)));
+  }
+
   const issuesFor = (id: string): Issue[] => (bd?.issues ?? []).filter((i) => i.target === id);
   const mismatch = bd?.issues.find((i) => i.code === "RECEIPT_TOTAL_MISMATCH" && i.detail?.difference !== undefined)
     ?.detail as { breakdown_total: number; receipt_total: number; difference: number } | undefined;
@@ -490,7 +497,7 @@ export function ReceiptEditor({
             {localErrors[editItem.id] && <ErrorText>{localErrors[editItem.id]}</ErrorText>}
             {issuesFor(editItem.id).filter((i) => i.code !== "ITEM_UNALLOCATED").map((i, n) => <ErrorText key={n}>{i.message}</ErrorText>)}
             <TextButton tone="danger" className="mt-6" disabled={items.length === 1}
-              onClick={() => { setItems((xs) => xs.filter((x) => x.id !== editItem.id)); setBulk((s) => { const n = new Set(s); n.delete(editItem.id); return n; }); setPanel(null); }}>
+              onClick={() => { removeItem(editItem.id); setPanel(null); }}>
               この商品を削除
             </TextButton>
           </div>
@@ -528,7 +535,8 @@ export function ReceiptEditor({
                     <option value="all">すべての商品</option>
                     <option value="8">税率8%の商品</option>
                     <option value="10">税率10%の商品</option>
-                    {a.scopeItemIds?.length ? <option value="items">{items.filter((x) => a.scopeItemIds!.includes(x.id)).map((x) => x.name || "商品").join("・")}のみ</option> : null}
+                    {a.scopeItemIds?.length ? <option value="items">{items.filter((x) => a.scopeItemIds!.includes(x.id)).map((x) => x.name || "商品").join("・")}のみ</option>
+                      : a.scope === "items" ? <option value="items">削除した商品(選び直してください)</option> : null}
                   </select>
                 </label>
               )}

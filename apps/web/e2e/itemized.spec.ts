@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { createGroup, itemButton, newUser, openTab, sumOf } from "./helpers";
+import { createGroup, groupHome, itemButton, newUser, openTab, sumOf } from "./helpers";
 
 // 商品別割り勘: 数量単位の割当・まとめて割当・外税の比例配分・総額不一致の明示解消・編集履歴
 
@@ -138,4 +138,51 @@ test("同じ支出を2つの画面で同時に編集すると、後の保存は�
   // 先に保存した内容(3,200円)は上書きされていない
   await a.getByRole("button", { name: "最新の内容を確認" }).click();
   await expect(a.getByText("¥3,200").first()).toBeVisible();
+});
+
+test("商品を削除すると、その商品を対象にした値引きからも外し、対象がなくなったら選び直してもらう", async ({ browser, baseURL }) => {
+  const a = await newUser(browser, { baseURL });
+  await createGroup(a, "値引きの対象", "Bさん, Cさん");
+  const home = groupHome(a);
+  const g = await (await a.request.get(`/api/v1/groups/${home.split("/")[2]}`)).json();
+  const id = (name: string) => g.members.find((m: { display_name: string }) => m.display_name === name).id;
+  const item = (iid: string, name: string, line: number, who: string) => ({
+    id: iid, name, line_minor: line, quantity: 1,
+    allocation: { mode: "equal", shares: [{ member_id: id(who), value: 1 }] },
+  });
+  // 読み取り結果から作った支出と同じ形: 値引きは餃子とサラダだけが対象
+  const r = await a.request.post(`/api/v1/groups/${g.public_id}/expenses`, {
+    headers: { "X-WariLink-CSRF": "1", "Idempotency-Key": crypto.randomUUID() },
+    data: {
+      title: "中華", amount_minor: 1500, payers: [{ member_id: id("Aさん"), amount_minor: 1500 }],
+      split: { mode: "itemized", receipt: { receipt_total_minor: 1500,
+        items: [item("ramen", "ラーメン", 900, "Aさん"), item("gyoza", "餃子", 400, "Bさん"), item("salad", "サラダ", 300, "Cさん")],
+        adjustments: [{ id: "d", kind: "discount", label: "セット割", amount_minor: -100,
+          rule: { type: "proportional", scope_item_ids: ["gyoza", "salad"] } }] } },
+    },
+  });
+  expect(r.status()).toBe(201);
+  await a.goto(`${home}/expenses/${(await r.json()).id}`);
+  await a.getByRole("button", { name: "編集する" }).click();
+  await expect(itemButton(a, "餃子")).toBeVisible();
+
+  // 1) 餃子を削除 → 値引きの対象はサラダだけになる(ラーメンには広げない)
+  const preview = a.waitForRequest((q) => q.url().includes("/expenses/preview")
+    && q.postDataJSON()?.split?.receipt?.items?.length === 2);
+  await itemButton(a, "餃子").click();
+  await a.getByRole("dialog", { name: "商品" }).getByRole("button", { name: "この商品を削除" }).click();
+  const sent = (await preview).postDataJSON().split.receipt.adjustments;
+  expect(sent.find((x: { id: string }) => x.id === "d").rule.scope_item_ids).toEqual(["salad"]);
+  await a.getByRole("button", { name: "税・割引・サービス料" }).click();
+  const adjust = a.getByRole("dialog", { name: "税・割引・サービス料" });
+  const scope = adjust.getByRole("combobox", { name: "セット割の対象" });
+  await expect(scope.locator("option:checked")).toHaveText("サラダのみ");
+  await adjust.getByRole("button", { name: "戻る" }).click();
+
+  // 2) サラダも削除 → 対象がなくなった値引きは全商品へ広げず、選び直すまで保存できない
+  await itemButton(a, "サラダ").click();
+  await a.getByRole("dialog", { name: "商品" }).getByRole("button", { name: "この商品を削除" }).click();
+  await a.getByRole("button", { name: "税・割引・サービス料" }).click();
+  await expect(scope.locator("option:checked")).toHaveText("削除した商品(選び直してください)");
+  await expect(adjust.getByText("配分対象の商品がありません")).toBeVisible();
 });
