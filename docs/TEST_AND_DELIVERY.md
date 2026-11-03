@@ -306,7 +306,7 @@
 | `CI_HEAD_MATCH` | STEP5 の PR の head SHA と一致する run で判定(PROMPT04) | 必須ジョブ: api(Ruff・mypy・pytest・秘密情報の検査・OpenAPI の一致)、web(TS 契約の一致・型検査・本番ビルド)、e2e(実 OCR・Playwright) |
 | `PRODUCTION_CONFIG` | PASS(自動で拒否する項目)/ 導入先の確認が残る | `tests/test_production_config.py`。`docs/SECURITY_PRIVACY.md` の公開前チェックリスト |
 | `BACKUP_RESTORE` | PASS(隔離した一時コンテナでの訓練) | backup → restore → 行数・画像のチェックサム・外部キー・アプリからの読み戻し。15 行・画像 1 枚で 4 秒 |
-| 削除の保持契約の復元時の遵守 | PASS(API テスト) | `tests/api/test_account_deletion.py::test_tombstones_reapply_deletions_after_restore` |
+| 用意された削除済み一覧の復元時の再適用 | PASS(API テスト。外部一覧の最新性は未検証) | `tests/api/test_account_deletion.py::test_tombstones_reapply_deletions_after_restore` |
 | バックアップの暗号化・外部保管・アクセス権 | BLOCKED | 保管先・資格情報が未決定(手順のみ) |
 | 監視・通知 | BLOCKED | 通知先・外形監視が未設定(失敗時の終了コードと `WARILINK_ALERT_CMD` は実装済み) |
 | `CALCULATION_STRESS` | PASS(2026-10-30、下の「計算ストレステスト」) | 100,000 件のランダム配分・5,000 件の明細・2,000 件の台帳・10,000 件の 1 円不一致。`make test-stress` |
@@ -389,3 +389,5 @@
 - 手元での実行(3 つの種、各 11 件): すべて PASS(各 90〜96 秒)。20 人の厳密解は上限 200 ms では常に貪欲法に切り替わる(1,500 ms では厳密解)。
 - 判定: `OCR_REAL_HOLDOUT=BLOCKED`(実レシート 0 件)、`OCR_RELEASE=BLOCKED`(閾値未決定)、
   `SCHEDULED_RUN=UNEXECUTED`(定期実行の初回をまだ観測していない)、`DEVICE_MANUAL_QA=UNEXECUTED`(`docs/QA_DEVICE_CHECKLIST.md`)。
+
+バックアップ状態の検証では、開発環境のローカル保存と、完全な暗号化バックアップを外部保管に送りハッシュ照合した成功を区別する。外部で独立管理される削除済み一覧の最新性は現行基盤では確立できず、本番復元は BLOCKED。ローカルの模擬テストはライブ KMS、実際の外部保管、本番復元の検証ではない。

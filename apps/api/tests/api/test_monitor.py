@@ -92,3 +92,19 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
     get_settings.cache_clear()
     assert monitor.main(["--json"]) == 0
     get_settings.cache_clear()
+
+
+def test_job_timestamp_order_and_future():
+    from types import SimpleNamespace
+
+    t = now()
+    for success, failure, expected in (
+        (t - timedelta(hours=1), t, False),
+        (t - timedelta(hours=1), t - timedelta(hours=2), True),
+        (t - timedelta(hours=1), t - timedelta(hours=1), False),
+        (t - timedelta(hours=49), None, False),
+        (t + timedelta(hours=1), None, False),
+    ):
+        row = SimpleNamespace(job="backup", last_success_at=success, last_failure_at=failure)
+        db = SimpleNamespace(query=lambda model, current=row: SimpleNamespace(all=lambda: [current]))
+        assert monitor.check_jobs(db, t, {"backup": 48})[0].ok is expected

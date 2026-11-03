@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.security import now
+from app.models.tables import MaintenanceRun
 from app.modules.identity.retention import RETENTION_JOB, record_run
 from app.modules.meta.router import AUTOMATIC_DELETION_MAX_AGE_HOURS, BACKUP_RETENTION_DAYS
 from app.ocr.cli import cmd_purge
@@ -71,3 +72,23 @@ def test_plans_response_is_unchanged(user_factory):
     assert set(body) == {"passkeys_available", "payment_destinations_available", "ocr_available", "ads_available",
                          "billing_available", "ocr_free_monthly_scans", "ocr_reward_scans_per_ad",
                          "ocr_monthly_scan_cap", "plans"}
+
+
+def test_status_respects_failure_order_and_future(user_factory):
+    u = user_factory()
+    t = now() - timedelta(minutes=1)
+    for success, failure, expected in (
+        (t, t + timedelta(seconds=1), "unverified"),
+        (t, t - timedelta(seconds=1), "verified"),
+        (t, t, "unverified"),
+        (t - timedelta(hours=49), None, "unverified"),
+        (now() + timedelta(hours=1), None, "unverified"),
+    ):
+        with Session(get_engine()) as db:
+            row = db.get(MaintenanceRun, RETENTION_JOB)
+            if row is None:
+                row = MaintenanceRun(job=RETENTION_JOB)
+                db.add(row)
+            row.last_success_at, row.last_failure_at = success, failure
+            db.commit()
+        assert _get(u)["automatic_deletion"]["status"] == expected

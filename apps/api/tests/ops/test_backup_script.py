@@ -7,6 +7,7 @@ pg_dump・psql を置き換え、暗号化の形式・改ざんの検出・復�
 import argparse
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def mod(monkeypatch):
     snap = {"alembic_version": "v1", "row_counts": {"groups": 1}, "live_image_keys": ["a.jpg", "b.jpg"]}
     monkeypatch.setattr(m, "snapshot", lambda args, db: snap)
     monkeypatch.setattr(m, "tombstones_latest", lambda args, db: "2026-10-30T00:00:00+00:00")
-    monkeypatch.setattr(m, "record_run", lambda args, db, job: None)
+    monkeypatch.setattr(m, "record_run", lambda args, db, job, *, ok: None)
     code = "import sys; sys.stdout.buffer.write(b'PGDMP' + bytes(range(256)) * 9000)"
     monkeypatch.setattr(m, "dump_cmd", lambda args, db: [sys.executable, "-c", code])
     created = []
@@ -172,3 +173,49 @@ def test_prune_handles_both_formats_and_leaves_unknown(mod, tmp_path, capsys):
         (root / name / "manifest.json").write_text(json.dumps({"format": fmt, "created_at": created}))
     assert mod.main(["prune", "--root", str(root)]) == 0
     assert sorted(p.name for p in root.iterdir()) == ["other"]
+
+
+@pytest.mark.parametrize("case, expected", [("no_offsite", 4), ("upload_failure", 4), ("missing", 1),
+                                           ("complete", 0), ("local", 0), ("local_storage", 0)])
+def test_backup_status_requires_complete_verified_offsite(mod, tmp_path, monkeypatch, case, expected):
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "development" if case in ("local", "local_storage") else "production")
+    runs = []
+    monkeypatch.setattr(mod, "record_run", lambda args, db, job, *, ok: runs.append(ok))
+    storage = None if case in ("no_offsite", "local") else LocalDirStorage(tmp_path / "remote")
+    if case == "upload_failure":
+        def fail(*args):
+            raise mod.OffsiteError("failed")
+
+        monkeypatch.setattr(mod, "upload", fail)
+    _, rc = _make(mod, tmp_path, FakeKmsProvider(), storage=storage,
+                  images=("a.jpg",) if case == "missing" else ("a.jpg", "b.jpg"))
+    assert rc == expected
+    assert runs == ([] if case in ("local", "local_storage") else [case == "complete"])
+    if case == "missing":
+        # 不完全な画像セットを、manifest付きの復元可能バックアップとして保管しない。
+        assert not list((tmp_path / "remote").rglob("manifest.json"))
+
+
+def test_backup_status_write_failure_is_not_success(mod, tmp_path, monkeypatch):
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+
+    def fail(*args, **kwargs):
+        raise mod.Refused("status write failed")
+
+    monkeypatch.setattr(mod, "record_run", fail)
+    with pytest.raises(mod.Refused):
+        _make(mod, tmp_path, FakeKmsProvider(), storage=LocalDirStorage(tmp_path / "remote"))
+
+
+def test_record_run_fails_closed_on_database_error(mod, monkeypatch):
+    spec = importlib.util.spec_from_file_location("backup_record_test", SCRIPT)
+    assert spec and spec.loader
+    actual = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(actual)
+
+    def fail(*args):
+        raise subprocess.CalledProcessError(1, "psql")
+
+    monkeypatch.setattr(actual, "psql", fail)
+    with pytest.raises(actual.Refused):
+        actual.record_run(_args(), "warilink_src", "backup", ok=True)

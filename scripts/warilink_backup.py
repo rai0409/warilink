@@ -84,16 +84,20 @@ def dump_cmd(args: argparse.Namespace, db: str) -> list[str]:
             "--no-privileges", *(f"--exclude-table-data={t}" for t in EXCLUDED_TABLE_DATA)]
 
 
-def record_run(args: argparse.Namespace, db: str, job: str) -> None:
-    """成功の時刻だけを maintenance_runs に残す(監視でバックアップの新しさを見るため)。
-
-    表が無い古い DB では何もしない。
-    """
+def record_run(args: argparse.Namespace, db: str, job: str, *, ok: bool) -> None:
+    """バックアップの成否を記録する。記録できない成功は成功として扱わない。"""
+    column = "last_success_at" if ok else "last_failure_at"
     try:
-        psql(args, db, "DO $$ BEGIN IF to_regclass('public.maintenance_runs') IS NOT NULL THEN "
-                       f"INSERT INTO maintenance_runs(job, last_success_at) VALUES ('{job}', now()) "
-                       "ON CONFLICT (job) DO UPDATE SET last_success_at = now(); END IF; END $$;")
-    except subprocess.CalledProcessError:
+        psql(args, db, f"INSERT INTO maintenance_runs(job, {column}) VALUES ('{job}', now()) "
+                       f"ON CONFLICT (job) DO UPDATE SET {column} = now();")
+    except (subprocess.CalledProcessError, OSError) as e:
+        raise Refused("maintenance_runs に記録できませんでした") from e
+
+
+def record_failure(args: argparse.Namespace) -> None:
+    try:
+        record_run(args, args.db, "backup", ok=False)
+    except Refused:
         print(json.dumps({"warning": "maintenance_runs に記録できませんでした"}, ensure_ascii=False), file=sys.stderr)
 
 
@@ -148,7 +152,8 @@ def cmd_backup_plaintext(args: argparse.Namespace) -> int:
     dump = out / "db.dump"
     with dump.open("wb") as f:
         subprocess.run(dump_cmd(args, args.db), stdout=f, stderr=subprocess.PIPE, check=True)
-    # 画像はダンプの直後に複写する。ダンプ後に増えた画像は DB に無いので orphan、ダンプ後に消えた画像は missing として検出する
+    # 画像はダンプの直後に複写する。ダンプ後に増えた画像は DB に無いので orphan、
+    # ダンプ後に消えた画像は missing として検出する
     src = Path(args.receipts_dir)
     files = {}
     for p in sorted(src.iterdir()) if src.exists() else []:
@@ -206,12 +211,21 @@ def _encrypt_file(src: Path, dst: Path, dek: bytes, backup_id: str, name: str):
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
+    if getattr(args, "insecure_plaintext", False):
+        return cmd_backup_plaintext(args)
+    try:
+        return _cmd_backup_encrypted(args)
+    except Exception:
+        if is_production():
+            record_failure(args)
+        raise
+
+
+def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
     """暗号化したバックアップ(format warilink-backup-2)。
 
     終了コード: 0 成功 / 1 画像の欠け / 3 拒否 / 4 外部保管なし(本番)。
     """
-    if getattr(args, "insecure_plaintext", False):
-        return cmd_backup_plaintext(args)
     check_name(args.db)
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -273,21 +287,23 @@ def cmd_backup(args: argparse.Namespace) -> int:
     (out / "manifest.json").write_text(json.dumps(outer, ensure_ascii=False, indent=1))
     del dek
     offsite = None
-    if storage is not None:
+    if storage is not None and not missing:
         try:
             offsite = upload(storage, out, f"{created_at[:10]}-{backup_id}")
-        except OffsiteError as e:
+        except (OffsiteError, OSError) as e:
             print(json.dumps({"backup": str(out), "offsite_failed": str(e)}, ensure_ascii=False))
+            if is_production():
+                record_failure(args)
             return 4
-    rc = 1 if missing else 0
-    if rc == 0:
-        record_run(args, args.db, "backup")
+    rc = 4 if storage is None and is_production() else 1 if missing else 0
+    if rc != 0 and is_production():
+        record_failure(args)
+    elif rc == 0 and is_production():
+        record_run(args, args.db, "backup", ok=True)
     print(json.dumps({"backup": str(out), "format": FORMAT, "key_provider": provider.name, "key_id": key_id,
                       "alembic_version": inner["alembic_version"], "rows": sum(inner["row_counts"].values()),
                       "images": len(images), "missing_images_at_backup": len(missing),
                       "offsite": offsite if offsite is not None else "not_configured"}, ensure_ascii=False))
-    if storage is None and is_production():
-        return 4  # 本番で外部保管が無いバックアップは不完全(PASS 扱いしない)
     return rc
 
 
@@ -495,7 +511,8 @@ def cmd_restore_plaintext(args: argparse.Namespace, src: Path, manifest: dict) -
     # 3. 読み戻して検証
     after = snapshot(args, args.target_db)
     restored_files = {p.name: sha256_file(p) for p in target_dir.iterdir() if p.is_file()}
-    fk_invalid = psql(args, args.target_db, "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND NOT convalidated")
+    fk_invalid = psql(args, args.target_db,
+                      "SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND NOT convalidated")
     checks = {
         "alembic_version": after["alembic_version"] == manifest["alembic_version"],
         "row_counts": after["row_counts"] == manifest["row_counts"],

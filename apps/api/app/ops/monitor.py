@@ -57,8 +57,10 @@ def check_jobs(db: Session, at: datetime, limits: dict[str, int]) -> list[Check]
             out.append(Check(f"job:{job}", False, "never"))
             continue
         age = (at - r.last_success_at) / timedelta(hours=1)
-        failed_after = r.last_failure_at is not None and r.last_failure_at > r.last_success_at
-        if age > hours:
+        failed_after = r.last_failure_at is not None and r.last_failure_at >= r.last_success_at
+        if age < 0:
+            out.append(Check(f"job:{job}", False, "future"))
+        elif age > hours:
             out.append(Check(f"job:{job}", False, f"stale {age:.0f}h"))
         elif failed_after:
             out.append(Check(f"job:{job}", False, "last_run_failed"))
