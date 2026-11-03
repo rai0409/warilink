@@ -11,8 +11,8 @@
 
 | ゲート | 判定 | 証拠・残っていること |
 |---|---|---|
-| 数値: 独立オラクルとストレスの実測 | PASS(ローカル、2026-11-03、macOS arm64・Python 3.13、コミット 1458a13・独立レビュー PASS) | `docs/TEST_AND_DELIVERY.md`「数値の独立オラクルと反例の修正」。見つかった反例 3 件を修正済み。週 1 回のストレス(`.github/workflows/stress.yml`)はこのブランチでは未実行 |
-| main の CI | PASS(main `add054e`、2026-11-03) | https://github.com/rai0409/warilink/actions/runs/41586268832(conclusion=success、headSha=add054e を確認)。このブランチの CI は未実行(push していない) |
+| 数値: 独立オラクルとストレスの実測 | PASS(ローカル、2026-11-03、macOS arm64・Python 3.13、コミット 1458a13・独立レビュー PASS) | `docs/TEST_AND_DELIVERY.md`「数値の独立オラクルと反例の修正」。見つかった反例 3 件を修正済み。CI のストレス(`.github/workflows/stress.yml`、種 20261030 / 11 / 4242)を手動で実行し成功(2026-11-03、`51ba5d8`、https://github.com/rai0409/warilink/actions/runs/41602276943) |
+| main の CI | PASS(main `ca186dd`、2026-11-03) | https://github.com/rai0409/warilink/actions/runs/41602748349(api / web / e2e が成功。#17 のマージ後) |
 | CSRF・Origin・回数制限 | PASS(ローカル、2026-11-03、コミット 1458a13 で API テスト 374 件が成功、使い捨て DB) | `apps/api/tests/api/test_flow.py`(CSRF・Origin)、`apps/api/tests/api/test_rate_limits.py` |
 | 端末での手動確認(iPhone・Android・読み上げ) | UNEXECUTED | `docs/QA_DEVICE_CHECKLIST.md`(`DEVICE_MANUAL_QA=UNEXECUTED`) |
 | 本番の HTTPS・送信元 IP・専用 DB・DB の権限 | BLOCKED | 設定の検査はある(`apps/api/tests/test_production_config.py`、`apps/api/tests/test_deploy_config.py`)。導入先・逆プロキシ・DB の権限が未決定で、本番相当の確認はしていない |

@@ -423,3 +423,4 @@
 - テスト: `apps/web/e2e/policy.spec.ts`(`/plans` を本番の既定値=読み取り・広告 OFF に差し替えて確認)。
 - ゲートの一覧と判定: `docs/FREE_RELEASE_GATES.md`(`FREE_RELEASE=NO_GO`)。
 - 実行記録(2026-11-03、コミット f4bdab8、ローカル macOS arm64、使い捨て DB): API の pytest 376 件成功、web の typecheck・build 成功、E2E 42 件成功(隔離した E2E 用 DB)。独立レビュー(P01+P02 と P05)はどちらも PASS。
+- 商品を削除したときは、その商品だけを対象にした値引き等の対象からも外す。対象がすべて消えた調整は全商品へ広げず、「削除した商品(選び直してください)」と示して保存できないままにする(`apps/web/e2e/itemized.spec.ts`。修正前のコードでは失敗することを確認)。
