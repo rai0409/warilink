@@ -424,4 +424,20 @@ def test_adjustment_scoped_to_missing_item_is_reported_not_redistributed():
         receipt_total_minor=1200,
     )
     r = compute_receipt(spec, "s")
-    assert "ADJUSTMENT_RULE_INVALID" in [i.code for i in r.issues], r.adjustment_allocations
+    issue = next((i for i in r.issues if i.code == "ADJUSTMENT_RULE_INVALID"), None)
+    assert issue is not None, r.adjustment_allocations
+    assert issue.target == "d" and issue.detail["items"] == ["gyoza_deleted"]
+    assert "d" not in r.adjustment_allocations  # 配り直した結果を返さない
+
+
+def test_equal_adjustment_skips_members_with_zero_base_by_hand():
+    """手計算の例。サービス料 100 円を「対象商品の負担者で均等」に配る。数量 0 個の C は負担者ではないので除き、
+    A・B で 50 円ずつ。"""
+    spec = ReceiptSpec(
+        items=[Item("beer", "ビール", 1000, 2, None, ItemAllocation("units", {"A": 1, "B": 1, "C": 0}))],
+        adjustments=[Adjustment("s", "service_charge", 100, "サービス料", AdjustmentRule("equal"))],
+        receipt_total_minor=1100,
+    )
+    r = compute_receipt(spec, "hand")
+    assert r.ok, r.issues
+    assert r.adjustment_allocations["s"] == {"A": 50, "B": 50}

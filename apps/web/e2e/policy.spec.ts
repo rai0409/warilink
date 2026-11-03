@@ -66,3 +66,15 @@ test("読み取りを有効にしていても、広告を止めている間は�
   await expect(a.getByText("広告の視聴による読み取り枚数の追加は準備中です")).toBeVisible();
   await expect(a.getByRole("table", { name: "料金プランの比較" }).getByRole("row", { name: /無料/ })).not.toContainText("〜");
 });
+
+test("読み取りを止めている間は、広告を有効にしていても広告で増える枚数を示さない", async ({ browser, baseURL }) => {
+  const a = await newUser(browser, { baseURL });
+  await a.route("**/api/v1/plans", async (route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, json: { ...(await res.json()), ocr_available: false, ads_available: true } });
+  });
+  await a.goto("/pricing");
+  await expect(a.getByText("登録なしの割り勘・精算はいつでも無料")).toBeVisible();
+  await expect(a.getByText(/報酬広告の視聴/)).toHaveCount(0);
+  await expect(a.getByText("レシート読み取りは停止中です(手入力で登録できます)")).toBeVisible();
+});

@@ -14,7 +14,9 @@ function scansLabel(p: Plan, adsAvailable: boolean) {
 
 /** プランの説明(サーバーの文言)から、止めている機能の説明を外し、停止中であることを書き足す */
 function visibleNotes(notes: string[], plans: Plans) {
-  const out = notes.filter((n) => (plans.ocr_available || !n.includes("読み取り")) && (plans.ads_available || !n.includes("広告")));
+  // 広告で増えるのは読み取り枚数なので、広告の説明は読み取りと広告の両方が使えるときだけ出す
+  const out = notes.filter((n) => (plans.ocr_available || !n.includes("読み取り"))
+    && ((plans.ads_available && plans.ocr_available) || !n.includes("広告")));
   if (!plans.ocr_available && out.length < notes.length) out.push("レシート読み取りは停止中です(手入力で登録できます)");
   else if (!plans.ads_available && out.length < notes.length) out.push("広告の視聴による読み取り枚数の追加は準備中です");
   return out;

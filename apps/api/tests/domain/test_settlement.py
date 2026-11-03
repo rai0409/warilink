@@ -309,3 +309,11 @@ def test_balances_beyond_single_amount_limit_are_still_settled():
     res = optimize_transfers(bal)
     assert res.transfers == [Transfer("B", "A", 2 * 10**12)]
     verify_transfers(bal, res.transfers)
+
+
+def test_balances_beyond_js_safe_integer_are_rejected():
+    ok = 2**53 - 1
+    assert optimize_transfers({"A": ok, "B": -ok}).transfers == [Transfer("B", "A", ok)]
+    with pytest.raises(MoneyError) as e:
+        optimize_transfers({"A": 2**53, "B": -(2**53)})
+    assert e.value.code == "AMOUNT_OUT_OF_RANGE"
