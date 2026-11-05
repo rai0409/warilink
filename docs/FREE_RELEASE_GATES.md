@@ -7,7 +7,7 @@
 判定は PASS / FAIL / BLOCKED / UNEXECUTED のどれか。**未実施を PASS にしない**。証拠が手元の実行だけのものは「ローカル」と書く。
 ここにある PASS は、開発環境でのテストの結果です。本番で動いていることを示すものではありません。
 
-**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-03、ブランチ `feat/warilink-prelaunch-quality-20261103`)
+**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-04、ブランチ `feat/warilink-step01-deletion-journal-20261104`)
 
 | ゲート | 判定 | 証拠・残っていること |
 |---|---|---|
@@ -18,6 +18,7 @@
 | 本番の HTTPS・送信元 IP・専用 DB・DB の権限 | BLOCKED | 設定の検査はある(`apps/api/tests/test_production_config.py`、`apps/api/tests/test_deploy_config.py`)。導入先・逆プロキシ・DB の権限が未決定で、本番相当の確認はしていない |
 | 保存期限の自動削除ジョブ | BLOCKED | `RETENTION_RUNTIME=BLOCKED`。導入先でジョブが未登録。画面はジョブの実績が無い間は自動削除を約束しない |
 | 暗号化バックアップと削除の再適用 | PASS(ローカル、2026-10-31、PR C #14) | `ENCRYPTED_BACKUP_TEST=PASS`、`RESTORE_DRILL=PASS`(隔離した一時コンテナ)。記録は `docs/TEST_AND_DELIVERY.md`「PR C」 |
+| 削除の記録(DB の外の削除ジャーナル・削除の前後の記録・復元時の検査) | PASS(ローカル、2026-11-04、STEP 01、使い捨て DB で API テスト 416 件・隔離した一時コンテナで復元訓練) | `docs/TEST_AND_DELIVERY.md`「STEP 01」。ローカルディレクトリの実装だけで、外部保管ではない(次の行)。このブランチの CI は未実行(push していない) |
 | バックアップ・削除履歴の外部保管、本番相当の復元 | BLOCKED | `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` / `RPO_RTO_PROVEN` が BLOCKED(保管先・KMS が未選定) |
 | 通知・監視 | BLOCKED | `MONITOR_ALERT_LIVE=BLOCKED`(通知先が未選定) |
 | 利用規約・プライバシーポリシー・問い合わせ先 | BLOCKED | 画面は「準備中」。下書きは `docs/legal/`、決める項目は `docs/legal/README.md` の `OWNER_APPROVAL_REQUIRED` |

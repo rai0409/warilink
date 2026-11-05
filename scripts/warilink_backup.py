@@ -20,6 +20,11 @@
   本番(WARILINK_ENVIRONMENT=production)では拒否。
 - 外部保管: WARILINK_BACKUP_OFFSITE(現状は local:ディレクトリ だけ)。本番で未設定なら終了コード 4(不完全)。
 - 復元は DB の外の削除済み一覧(--tombstones)が必須。バックアップ時点の一覧より古ければ拒否し、復元後に必ず再適用する。
+- 削除ジャーナル(STEP 01、--journal または WARILINK_DELETION_JOURNAL): backup は manifest.enc にその時点の
+  チェックポイントを入れる(本番でジャーナルが無ければ拒否)。restore は DB を作る前に、記録の連番・hash・HEAD、
+  チェックポイントが記録の一部であること、確定していない削除が無いことを確かめ、確定済みの削除をすべて再適用する。
+  チェックポイントの無い旧形式のバックアップは、本番では --accept-legacy-backup を付けたときだけ復元する
+  (結果の journal.status に unverified_legacy / verified_without_checkpoint と残す)。
 
 PostgreSQL のツールは DB コンテナ(既定 `warilink-db-1`)の中のものを `docker exec` で使う。
 """
@@ -35,6 +40,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -55,6 +61,12 @@ from app.ops.backup_crypto import (  # noqa: E402
     decrypt_chunks,
     dek_aad,
     new_dek,
+)
+from app.ops.deletion_journal import (  # noqa: E402
+    Checkpoint,
+    JournalError,
+    journal_from_url,
+    verify_checkpoint,
 )
 from app.ops.offsite import LocalDirStorage, OffsiteError, storage_from_env, upload  # noqa: E402
 
@@ -202,6 +214,57 @@ def tombstones_latest(args: argparse.Namespace, db: str) -> str | None:
     return f"{v}+00:00" if v else None
 
 
+def journal_for(args: argparse.Namespace):
+    """--journal(または WARILINK_DELETION_JOURNAL)のジャーナル。テストと drill はオブジェクトを渡せる。"""
+    j = getattr(args, "journal", None) or os.environ.get("WARILINK_DELETION_JOURNAL")
+    if j is None or not isinstance(j, str):
+        return j
+    try:
+        return journal_from_url(j)
+    except JournalError as e:
+        raise Refused(str(e)) from None
+
+
+def journal_checkpoint(args: argparse.Namespace) -> dict | None:
+    journal = journal_for(args)
+    if journal is None:
+        if is_production():
+            raise Refused("本番では削除ジャーナル(WARILINK_DELETION_JOURNAL)が必要です")
+        return None
+    try:
+        return journal.state().checkpoint.to_json()
+    except JournalError as e:
+        raise Refused(f"削除ジャーナルを読めません: {e}") from None
+
+
+def journal_rows(args: argparse.Namespace, inner: dict) -> tuple[dict, list[dict]]:
+    """復元に使う削除ジャーナルを DB に触れる前に検査し、(結果の要約, 再適用する確定済みの削除) を返す。"""
+    raw = inner.get("journal_checkpoint")
+    journal = journal_for(args)
+    if raw is None:
+        if is_production() and not getattr(args, "accept_legacy_backup", False):
+            raise Refused("このバックアップには削除ジャーナルのチェックポイントがありません(旧形式)。"
+                          "削除の取りこぼしが無いことを確かめたうえで --accept-legacy-backup を付けてください")
+        if journal is None:
+            return {"status": "unverified_legacy"}, []
+    elif journal is None:
+        raise Refused("このバックアップは削除ジャーナル付きです。--journal を指定してください")
+    try:
+        st = journal.state()
+        if raw is not None:
+            verify_checkpoint(st, Checkpoint.from_json(raw))
+    except JournalError as e:
+        raise Refused(f"削除ジャーナルを復元に使えません: {e}") from None
+    if st.pending:
+        raise Refused(f"確定していない削除が {len(st.pending)} 件あります。本番の DB で journal-reconcile を実行して"
+                      "確定させてから復元してください(結果が曖昧なまま復元しません)")
+    rows = [{"kind": k, "target_id": t, "op_id": op} for op, targets in st.finalized.items() for k, t in targets]
+    summary = {"status": "verified" if raw is not None else "verified_without_checkpoint",
+               "checkpoint_seq": raw["seq"] if raw is not None else None, "journal_seq": st.checkpoint.seq,
+               "finalized_ops": len(st.finalized)}
+    return summary, rows
+
+
 def _encrypt_file(src: Path, dst: Path, dek: bytes, backup_id: str, name: str):
     with src.open("rb") as fin, dst.open("wb") as fout:
         w = EncryptWriter(fout, dek, backup_id, name)
@@ -242,6 +305,7 @@ def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
     backup_id, created_at = uuid.uuid4().hex, datetime.now(UTC).isoformat()
     dek = new_dek()
     key_id, wrapped = provider.wrap(dek, dek_aad(backup_id, created_at, provider.active_key_id()))
+    journal_cp = journal_checkpoint(args)  # ダンプの前(この後の削除は、復元のときにジャーナルから再適用する)
     before = snapshot(args, args.db)
     latest_tomb = tombstones_latest(args, args.db)
     files = {}
@@ -268,7 +332,7 @@ def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
         "backup_id": backup_id, "created_at": created_at, "source_db": args.db,
         "alembic_version": before["alembic_version"], "row_counts": before["row_counts"],
         "live_image_keys": before["live_image_keys"], "missing_images_at_backup": missing,
-        "tombstones_latest": latest_tomb,
+        "tombstones_latest": latest_tomb, "journal_checkpoint": journal_cp,
         "files": {n: {"ciphertext_sha256": e.ciphertext_sha256, "bytes": e.bytes,
                       "plaintext_sha256": e.plaintext_sha256} for n, e in files.items()},
     }
@@ -431,6 +495,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if inner.get("tombstones_latest") and (file_latest is None or file_latest < inner["tombstones_latest"]):
         raise Refused("削除済み一覧がバックアップの時点より古いため、復元すると削除が戻るおそれがあります。"
                       "最新の一覧を指定してください")
+    journal_summary, journal_tombs = journal_rows(args, inner)
     if inner["missing_images_at_backup"] and not getattr(args, "accept_missing_images", False):
         raise Refused(f"バックアップの時点で画像が {len(inner['missing_images_at_backup'])} 枚欠けています。"
                       "確認のうえ --accept-missing-images を付けてください")
@@ -468,13 +533,18 @@ def cmd_restore(args: argparse.Namespace) -> int:
         "live_images_present": set(after["live_image_keys"]) <= set(restored),
         "foreign_keys_validated": fk_invalid == "0",
     }
-    tomb_result = reapply_tombstones(args, args.target_db, tomb, rows)
+    # DB の外の一覧とジャーナルの確定済みの削除を合わせて再適用する(ID だけの一時ファイル。終わったら消す)
+    with tempfile.TemporaryDirectory(prefix="warilink-tombs-") as tmp:
+        merged = Path(tmp) / "tombstones.jsonl"
+        all_rows = rows + journal_tombs
+        merged.write_text("".join(json.dumps(r) + "\n" for r in all_rows), encoding="utf-8")
+        tomb_result = reapply_tombstones(args, args.target_db, merged, all_rows)
     checks["tombstones_reapplied"] = tomb_result["tombstones_reapplied"]
     checks["deletions_hold"] = tomb_result["deletions_hold"]
     ok = all(checks.values())
     print(json.dumps({"restored": ok, "target_db": args.target_db, "checks": checks,
                       "reapplied": tomb_result["reapplied_counts"], "rows": sum(after["row_counts"].values()),
-                      "images": len(restored)}, ensure_ascii=False))
+                      "images": len(restored), "journal": journal_summary}, ensure_ascii=False))
     return 0 if ok else 1
 
 
@@ -564,7 +634,7 @@ def cmd_drill(args: argparse.Namespace) -> int:
         # 種データにはレシート画像を含める(V0 の既定では OCR が無効なので、訓練の元 DB だけで有効にする)
         env = {**os.environ, "WARILINK_DATABASE_URL": url, "WARILINK_RECEIPT_STORAGE_DIR": str(src_images),
                "WARILINK_ENVIRONMENT": "test", "WARILINK_FEATURE_OCR": "true", "PYTHONPATH": str(ROOT / "apps" / "api"),
-               "WARILINK_DRILL_STATE": str(state)}
+               "WARILINK_DRILL_STATE": str(state), "WARILINK_DELETION_JOURNAL": f"local:{work.resolve() / 'journal'}"}
         api = ROOT / "apps" / "api"
         py = str(ROOT / ".venv" / "bin" / "python")
         seed_py = str(ROOT / "scripts" / "warilink_backup_seed.py")
@@ -580,7 +650,7 @@ def cmd_drill(args: argparse.Namespace) -> int:
             return 1
         ns = argparse.Namespace(**{**vars(args), "db": src_db, "receipts_dir": str(src_images), "out": str(backup_dir),
                                    "provider": provider, "storage": LocalDirStorage(work / "offsite"),
-                                   "insecure_plaintext": False})
+                                   "insecure_plaintext": False, "journal": env["WARILINK_DELETION_JOURNAL"]})
         if cmd_backup(ns) != 0:
             return 1
         # バックアップの後に退会 → 削除済み一覧を DB の外へ書き出す(本番では定期ジョブが行う)
@@ -593,7 +663,8 @@ def cmd_drill(args: argparse.Namespace) -> int:
             return 1
         ns = argparse.Namespace(**{**vars(args), "from": str(backup_dir), "target_db": dst_db,
                                    "receipts_target": str(dst_images), "provider": provider,
-                                   "tombstones": str(tomb), "accept_missing_images": False})
+                                   "tombstones": str(tomb), "accept_missing_images": False,
+                                   "journal": env["WARILINK_DELETION_JOURNAL"]})
         rc = cmd_restore(ns)
         if rc == 0:
             # 復元した DB をアプリから読めること(合計金額・残高の和)と、退会した人が戻っていないことを確かめる
@@ -658,6 +729,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--receipts-dir", required=True)
     b.add_argument("--out", required=True)
     b.add_argument("--insecure-plaintext", action="store_true", help="開発用の平文バックアップ(本番では拒否)")
+    b.add_argument("--journal", help="削除ジャーナル(local:/絶対パス。既定は WARILINK_DELETION_JOURNAL)")
     r = sub.add_parser("restore")
     r.add_argument("--from", required=True)
     r.add_argument("--target-db", required=True)
@@ -665,6 +737,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--tombstones", help="DB の外の削除済み一覧(必須)")
     r.add_argument("--accept-missing-images", action="store_true",
                    help="バックアップ時点で欠けていた画像を承知で復元する")
+    r.add_argument("--journal", help="削除ジャーナル(local:/絶対パス。既定は WARILINK_DELETION_JOURNAL)")
+    r.add_argument("--accept-legacy-backup", action="store_true",
+                   help="削除ジャーナルのチェックポイントが無い旧形式のバックアップを承知で復元する(本番)")
     d = sub.add_parser("drop")
     d.add_argument("--target-db", required=True)
     dr = sub.add_parser("drill")

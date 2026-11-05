@@ -28,6 +28,22 @@
   (古いバックアップで戻すと、DB 内の一覧も古くなるため、必ず DB の外の一覧を使う)。何度実行しても同じ結果。
 - `WARILINK_TOMBSTONE_FILE` はバックアップと同じ保管先に置く(ID だけで個人情報は含まない)。未設定だと定期ジョブは失敗として通知する。
 
+## 削除ジャーナル(STEP 01、2026-11-04、`docs/DATA_MODEL.md` §11)
+
+- `WARILINK_DELETION_JOURNAL=local:/絶対パス`(本番は必須。未設定なら API が起動せず、`backup` も拒否する)。DB とは別の
+  ディスク・保管先に置く。ローカルの実装は外部保管ではない(外部保管は STEP 02 まで `OFFSITE_STORAGE_LIVE=BLOCKED`)。
+- 記録は追記だけで、消さない(`journal.jsonl` と `HEAD`、権限 600、ディレクトリ 700)。手で編集しない(連番・hash で検出され、
+  復元に使えなくなる)。
+- 確認: `cd apps/api && python -m app.modules.identity.retention journal-verify`
+  (終了コード 0 = 正常 / 1 = 未確定あり / 2 = 壊れている / 3 = 未設定・読めない)。
+- 未確定の確定: `journal-reconcile`(DB に操作の行がある = commit 済みのものだけを確定する)。`purge-images` の実行のたびにも行う。
+- 監視への組み込み(`python -m app.ops.monitor`)は STEP 04。それまでは `journal-verify` を定期に実行し、終了コード 1・2・3 を
+  通知する(出力は件数とチェックポイントだけ。ID・パスは出さない)。
+- DB に操作の行が無い未確定(commit されなかった)は自動では取り消さない。**現用の DB で、その操作の後に古いバックアップから
+  戻していないことを確かめてから** `journal-abort-absent --older-than-hours 24 --confirm-live-db` で取り消しとして記録する
+  (戻した DB で実行すると、commit 済みの削除を取り消しと記録してしまう)。
+- ジャーナル導入前の削除済み一覧は `journal-import-legacy` で移す(移すまで、その行は期限削除しない)。
+
 ## 監視と通知(STEP5)
 
 - `scripts/warilink_purge_job.sh` は失敗(画像の削除失敗・DB とファイルの不一致・削除済み一覧の書き出し失敗)を終了コード 1 と
@@ -65,7 +81,11 @@
 - 鍵の入れ替えの確認(新しい鍵で作れること・古い鍵の版で過去のバックアップを開けること)。
 
 ### 復元の手順(本番の切り戻しは未設計。以下は検証用の復元)
-1. `restore --from バックアップ --target-db warilink_restore_… --receipts-target 空のディレクトリ --tombstones $WARILINK_TOMBSTONE_FILE`
+1. `restore --from バックアップ --target-db warilink_restore_… --receipts-target 空のディレクトリ --tombstones $WARILINK_TOMBSTONE_FILE --journal $WARILINK_DELETION_JOURNAL`
+   - 削除ジャーナルが壊れている・別のジャーナル・バックアップの時点より短い・未確定の削除がある → DB を作る前に拒否される
+     (未確定は本番の現用 DB で `journal-reconcile` してから)。結果の `journal.status` が `verified` であることを確認する。
+   - STEP 01 より前のバックアップ(チェックポイントが無い)は、本番では `--accept-legacy-backup` を付けたときだけ復元する
+     (`journal.status` が `verified_without_checkpoint` / `unverified_legacy` として残る)。
 2. 削除済み一覧がバックアップの時点より古い・指定が無い → 拒否される。最新の一覧(別の保管先の複製)を探す。
 3. 認証に失敗(改ざん・鍵違い・欠け)→ DB には何も作られない。別の日のバックアップを試し、原因(保管先・鍵)を調べる。
 4. 撮影時点で画像が欠けていたバックアップ → 欠けを承知のうえで `--accept-missing-images`。

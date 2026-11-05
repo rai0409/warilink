@@ -7,6 +7,8 @@
 5. identity を無効にする(以後このセッション・Passkey では使えない)
 
 途中で失敗したら何も変わらない。削除できるのは自分だけで、他人のデータには触れない。
+削除ジャーナル(STEP 01)を設定している場合は、変更の前に DB の外へ記録し(書けなければ何も変えずに 503)、
+commit の後に記録を確定してから 200 を返す(確定できなければ 503。削除は済んでいて、確定は自動で再試行する)。
 Passkey の機能が有効で登録済みの本人には、直近の Passkey 確認(step-up)を要求する。
 ゲスト(と Passkey 停止中の登録済み本人)は、このブラウザのセッションと明示的な確認だけで削除できる
 (ゲストにはそれ以外の本人確認の手段がなく、消せるのは自分のデータだけ)。
@@ -18,6 +20,7 @@ Passkey の機能が有効で登録済みの本人には、直近の Passkey 確
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -39,8 +42,18 @@ from app.models.tables import (
     SessionRow,
     WebauthnChallenge,
 )
-from app.modules.groups.lifecycle import add_tombstone, mark_if_orphaned, release_owner
+from app.modules.groups.lifecycle import (
+    abort_deletion,
+    add_tombstone,
+    begin_deletion,
+    commit_deletion,
+    deletion_unconfirmed,
+    journal_unavailable,
+    mark_if_orphaned,
+    release_owner,
+)
 from app.modules.payment_destinations.router import crypto_erase
+from app.ops.deletion_journal import JournalError
 
 router = APIRouter(tags=["identity"])
 
@@ -61,6 +74,31 @@ def delete_account(body: AccountDeleteIn, request: Request, response: Response, 
     if ident.kind == "registered" and get_settings().feature_passkeys:
         require_step_up(request, db)
     me = db.execute(select(Identity).where(Identity.id == ident.id).with_for_update()).scalar_one()
+    dest = db.execute(select(PaymentDestination).where(PaymentDestination.owner_identity_id == me.id,
+                                                       PaymentDestination.erased_at.is_(None))
+                      .with_for_update()).scalar_one_or_none()
+    targets = ([("destination", dest.id)] if dest is not None else []) + [("identity", me.id)]
+    try:
+        op = begin_deletion(db, targets)  # 変更の前に DB の外へ記録する
+    except JournalError:
+        db.rollback()
+        raise journal_unavailable() from None
+    try:
+        left = _erase_account(db, me, dest, op)
+    except Exception:
+        db.rollback()
+        abort_deletion(op)  # 確実にロールバックした
+        raise
+    try:
+        commit_deletion(db, op)
+    except JournalError:
+        clear_session_cookie(response)  # 削除は commit 済み(このセッションは失効している)
+        raise deletion_unconfirmed() from None
+    clear_session_cookie(response)
+    return AccountDeleteOut(groups_left=left, destination_erased=dest is not None)
+
+
+def _erase_account(db: Session, me: Identity, dest: PaymentDestination | None, op: uuid.UUID | None) -> int:
     t = now()
 
     db.execute(update(SessionRow).where(SessionRow.identity_id == me.id, SessionRow.revoked_at.is_(None))
@@ -69,12 +107,9 @@ def delete_account(body: AccountDeleteIn, request: Request, response: Response, 
                                                PasskeyCredential.revoked_at.is_(None)).values(revoked_at=t))
     db.execute(delete(WebauthnChallenge).where(WebauthnChallenge.identity_id == me.id))
 
-    dest = db.execute(select(PaymentDestination).where(PaymentDestination.owner_identity_id == me.id,
-                                                       PaymentDestination.erased_at.is_(None))
-                      .with_for_update()).scalar_one_or_none()
     if dest is not None:
         crypto_erase(db, dest)
-        add_tombstone(db, "destination", dest.id)
+        add_tombstone(db, "destination", dest.id, op_id=op)
 
     db.execute(update(Invitation).where(Invitation.created_by == me.id, Invitation.revoked_at.is_(None))
                .values(revoked_at=t))
@@ -90,14 +125,12 @@ def delete_account(body: AccountDeleteIn, request: Request, response: Response, 
 
     me.disabled_at = t
     me.webauthn_user_handle = None
-    add_tombstone(db, "identity", me.id)  # バックアップから戻したときに、この退会を再適用する
+    add_tombstone(db, "identity", me.id, op_id=op)  # バックアップから戻したときに、この退会を再適用する
     # 監査ログには件数だけを残す(名前・グループ名などは書かない)
     db.add(AuditEvent(actor_identity_id=me.id, action="identity.delete", target_type="identity", target_id=str(me.id),
                       safe_metadata={"groups_left": len(left), "destination_erased": dest is not None,
                                      "kind": me.kind}))
-    db.commit()
-    clear_session_cookie(response)
-    return AccountDeleteOut(groups_left=len(left), destination_erased=dest is not None)
+    return len(left)
 
 
 def purge_expired_challenges(db: Session, *, at=None) -> int:

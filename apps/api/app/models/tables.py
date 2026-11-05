@@ -116,10 +116,27 @@ class DeletionTombstone(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # identity | destination | group
     target_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     created_at: Mapped[datetime] = _created()
+    # 削除ジャーナルの操作(STEP 01)。ジャーナル導入前の行と、ジャーナル未設定の開発環境の行は NULL
+    op_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     __table_args__ = (
         CheckConstraint("kind IN ('identity','destination','group')", name="ck_tombstone_kind"),
         UniqueConstraint("kind", "target_id", name="uq_tombstone_target"),
     )
+
+
+class DeletionJournalOp(Base):
+    """削除ジャーナルの操作(STEP 01、app/ops/deletion_journal.py)。削除と同じトランザクションで作る。
+
+    この行があれば、その操作の DB の削除は commit 済み(未確定の操作をジャーナルで finalize してよい根拠)。
+    finalized_at はジャーナルの finalize を確かめた時刻。ID と時刻だけを持つ(個人情報は持たない)。
+    """
+
+    __tablename__ = "deletion_journal_ops"
+    op_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    created_at: Mapped[datetime] = _created()
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (Index("ix_deletion_journal_ops_unfinalized", "created_at",
+                            postgresql_where=text("finalized_at IS NULL")),)
 
 
 class SessionRow(Base):

@@ -201,7 +201,9 @@
 | 参加者不在のグループ | 最後の参加者が抜けて(退会して)から 30 日で、すべての行と画像を削除 | `WARILINK_ORPHANED_GROUP_RETENTION_DAYS` |
 | 終了したグループ | 作成者が終了してから 1 年で、すべての行と画像を削除 | `WARILINK_CLOSED_GROUP_RETENTION_DAYS` |
 | バックアップ | 毎日取り、30 日分を残す(`scripts/warilink_backup.py prune`) | `BACKUP_RETENTION_DAYS` |
-| 削除済み一覧(tombstone) | 30 日(バックアップと同じ)。DB と DB の外(`WARILINK_TOMBSTONE_FILE`)の両方に持つ | `WARILINK_TOMBSTONE_RETENTION_DAYS` |
+| 削除済み一覧(tombstone) | 30 日(バックアップと同じ)。DB と DB の外(`WARILINK_TOMBSTONE_FILE`)の両方に持つ。削除ジャーナルを設定しているときは、ジャーナルで確定済みの操作の行だけを消す | `WARILINK_TOMBSTONE_RETENTION_DAYS` |
+| 削除ジャーナル(DB の外、STEP 01) | 消さない(追記だけ。ID と時刻だけで個人情報は持たない)。整理(古い記録の要約)は外部保管の実装(STEP 02)と合わせて決める | `WARILINK_DELETION_JOURNAL` |
+| 削除ジャーナルの操作(`deletion_journal_ops`) | 確定から 30 日を過ぎ、参照する削除済み一覧が無くなったら消す | `WARILINK_TOMBSTONE_RETENTION_DAYS` |
 
 - 作成者が抜ける・退会すると、参加の早い(`position` の小さい)参加者へ自動で引き継ぐ。作成者は手動でも引き継げる
   (`POST /groups/{id}/owner`)。誰もいなければ「参加者不在」(`groups.orphaned_at`)になり、誰かが参加すると取り消す。
@@ -214,3 +216,16 @@
 - 復元: バックアップから戻した後は、DB の外の削除済み一覧で退会・振込先の消去・グループの削除を再適用する
   (`python -m app.modules.identity.retention apply-tombstones`、`infra/ops/README.md`)。これで「削除したデータは、最長 30 日で
   バックアップからも消え、それより前に戻しても削除が再適用される」。WAL・スナップショットなど DB 以外の複製は、保管先の設定に従う。
+- 削除ジャーナル(STEP 01、2026-11-04、`apps/api/app/ops/deletion_journal.py`): 退会・振込先の消去・グループの完全な削除は、
+  変更の前に DB の外へ `prepare`(操作 ID・種類・対象 ID)を耐久化し、DB の削除・削除済み一覧(`deletion_tombstones.op_id`)・
+  操作の行(`deletion_journal_ops`: op_id, created_at, finalized_at)を 1 つのトランザクションで commit し、`finalize` を
+  耐久化してから成功を返す。記録は 1 行 1 件の JSON で、連番・直前の hash・自分の hash(sha256)を持つ。最後の記録の
+  {seq, hash} がチェックポイントで、バックアップの暗号化した manifest に入れる。
+  - 分散トランザクションではない。`prepare` だけが残った操作(commit の直後に落ちた・`finalize` を書けなかった)は未確定とし、
+    DB に操作の行があるときだけ `finalize` する(reconcile。定期ジョブが行う)。DB に無いことを根拠に自動で取り消しにはしない
+    (DB が古い状態に戻っている可能性があるため)。運用者が現用の DB であることを確かめて `journal-abort-absent` で取り消す。
+  - 復元は、記録の連番・hash・HEAD、チェックポイントが記録の一部であること、未確定が無いことを DB を作る前に確かめ、
+    確定済みの削除をすべて再適用する。チェックポイントの無い旧形式のバックアップは、本番では明示的な承知が無ければ拒否する。
+  - ジャーナル導入前の削除済み一覧(`op_id` が NULL)は信頼の根拠にせず、`journal-import-legacy` でジャーナルへ移すまで
+    期限削除しない。
+  - ローカルディレクトリの実装は、同じホストの故障に耐えない。外部保管(S3 など、オブジェクトの世代・ロック)は STEP 02。

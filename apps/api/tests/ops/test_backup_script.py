@@ -9,18 +9,20 @@ import importlib.util
 import json
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
 
 from app.ops.backup_crypto import FakeKmsProvider
+from app.ops.deletion_journal import LocalDirJournal
 from app.ops.offsite import LocalDirStorage
 
 SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "warilink_backup.py"
 
 
 @pytest.fixture
-def mod(monkeypatch):
+def mod(monkeypatch, tmp_path):
     spec = importlib.util.spec_from_file_location("warilink_backup_under_test", SCRIPT)
     assert spec and spec.loader
     m = importlib.util.module_from_spec(spec)
@@ -42,6 +44,8 @@ def mod(monkeypatch):
     m.created = created
     monkeypatch.delenv("WARILINK_ENVIRONMENT", raising=False)
     monkeypatch.delenv("WARILINK_BACKUP_OFFSITE", raising=False)
+    # 削除ジャーナル(STEP 01)。backup はチェックポイントを manifest に入れ、restore は検査してから使う
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'journal'}")
     return m
 
 
@@ -219,3 +223,96 @@ def test_record_run_fails_closed_on_database_error(mod, monkeypatch):
     monkeypatch.setattr(actual, "psql", fail)
     with pytest.raises(actual.Refused):
         actual.record_run(_args(), "warilink_src", "backup", ok=True)
+
+
+# ---------------------------------------------------------------- 削除ジャーナル(STEP 01)
+
+def _journal(tmp_path) -> LocalDirJournal:
+    return LocalDirJournal(tmp_path / "journal")  # mod のフィクスチャが WARILINK_DELETION_JOURNAL に設定した場所
+
+
+def _deleted(j: LocalDirJournal, n: int, *, finalize=True) -> uuid.UUID:
+    op = uuid.uuid4()
+    j.prepare(op, [("identity", uuid.UUID(int=n))])
+    if finalize:
+        j.finalize(op)
+    return op
+
+
+def _inner(mod, out, kms) -> dict:
+    inner, _ = mod.open_encrypted(_args(provider=kms), out, json.loads((out / "manifest.json").read_text()))
+    return inner
+
+
+def test_backup_records_the_journal_checkpoint_and_production_requires_a_journal(mod, tmp_path, monkeypatch):
+    j = _journal(tmp_path)
+    _deleted(j, 1)
+    kms = FakeKmsProvider()
+    out, rc = _make(mod, tmp_path, kms)
+    assert rc == 0
+    assert _inner(mod, out, kms)["journal_checkpoint"] == j.state().checkpoint.to_json()
+    assert "journal" not in (out / "manifest.json").read_text()  # 外側(平文)の manifest には出さない
+    monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+    with pytest.raises(mod.Refused, match="削除ジャーナル"):
+        _make(mod, tmp_path, kms, name="prod", storage=LocalDirStorage(tmp_path / "remote"))
+
+
+@pytest.mark.parametrize("case", ["no_journal", "pending", "other_journal", "tampered", "truncated", "corrupt_head"])
+def test_restore_refuses_an_unprovable_journal_before_touching_the_db(mod, tmp_path, monkeypatch, case):
+    j = _journal(tmp_path)
+    _deleted(j, 1)
+    _deleted(j, 2)
+    kms = FakeKmsProvider()
+    out, _ = _make(mod, tmp_path, kms)
+    _deleted(j, 3, finalize=case != "pending")  # バックアップの後の退会
+    root = tmp_path / "journal"
+    lines = (root / "journal.jsonl").read_text().splitlines()
+    if case == "no_journal":
+        monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
+    elif case == "other_journal":
+        other = LocalDirJournal(tmp_path / "other")
+        for n in range(1, 6):
+            _deleted(other, n)
+        monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'other'}")
+    elif case == "tampered":
+        r = json.loads(lines[0])
+        r["targets"][0]["target_id"] = str(uuid.UUID(int=99))
+        (root / "journal.jsonl").write_text("\n".join([json.dumps(r), *lines[1:]]) + "\n")
+    elif case == "truncated":  # バックアップの時点より短い(連番と HEAD は整合させる)
+        (root / "journal.jsonl").write_text(lines[0] + "\n")
+        (root / "HEAD").write_text(json.dumps({"format": "warilink-deletion-journal-1", "seq": 1,
+                                               "head": json.loads(lines[0])["hash"]}))
+    elif case == "corrupt_head":
+        (root / "HEAD").write_text("{")
+    with pytest.raises(mod.Refused, match="ジャーナル|確定していない"):
+        _restore(mod, tmp_path, out, kms, _tomb(tmp_path))
+    assert mod.created == []  # 復元先の DB を作る前に止まる
+
+
+def test_restore_reapplies_every_finalized_deletion_including_after_the_backup(mod, tmp_path):
+    j = _journal(tmp_path)
+    before = _deleted(j, 1)
+    kms = FakeKmsProvider()
+    out, _ = _make(mod, tmp_path, kms)
+    after = _deleted(j, 2)
+    _deleted(j, 3, finalize=False)
+    j.abort(uuid.UUID(next(iter(j.state().pending))))  # 確実にロールバックした操作は再適用しない
+    summary, rows = mod.journal_rows(_args(), _inner(mod, out, kms))
+    assert summary == {"status": "verified", "checkpoint_seq": 2, "journal_seq": 6, "finalized_ops": 2}
+    assert sorted((r["op_id"], r["target_id"]) for r in rows) == sorted(
+        [(str(before), str(uuid.UUID(int=1))), (str(after), str(uuid.UUID(int=2)))])
+
+
+def test_legacy_backups_without_a_checkpoint_are_not_silently_trusted(mod, tmp_path, monkeypatch):
+    legacy = {"tombstones_latest": None}  # STEP 01 より前の manifest.enc(チェックポイントが無い)
+    assert mod.journal_rows(_args(), legacy)[0]["status"] == "verified_without_checkpoint"
+    monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
+    assert mod.journal_rows(_args(), legacy) == ({"status": "unverified_legacy"}, [])  # 開発では従来どおり
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+    with pytest.raises(mod.Refused, match="--accept-legacy-backup"):
+        mod.journal_rows(_args(), legacy)
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'journal'}")
+    with pytest.raises(mod.Refused, match="--accept-legacy-backup"):
+        mod.journal_rows(_args(), legacy)
+    assert mod.journal_rows(_args(accept_legacy_backup=True), legacy)[0]["status"] == "verified_without_checkpoint"

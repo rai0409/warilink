@@ -5,14 +5,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.security import now
+from app.modules.groups import lifecycle
 from app.modules.identity import account, retention
 from app.ocr import jobs
 from app.ocr.cli import main as cli
+from app.ops.deletion_journal import JournalUnavailable, LocalDirJournal
 
 from .conftest import User, equal_expense, join_as, make_group
 from .test_destinations import ACCOUNT, _set_session, bank, registered
@@ -381,3 +384,253 @@ def test_tombstone_cli_export_and_apply(user_factory, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["appended"] == 1
     assert retention.main(["apply-tombstones", "--in", str(out)]) == 0
     assert json.loads(capsys.readouterr().out)["reapplied"] == {"identity": 0, "destination": 0, "group": 0}
+
+
+# ---------------------------------------------------------------- 削除ジャーナル(STEP 01)
+
+class Faulty:
+    """削除ジャーナルの故障注入。fail に入れた操作で書込みに失敗する(記録は残さない)。"""
+
+    name = "faulty"
+
+    def __init__(self, inner, *fail):
+        self.inner, self.fail = inner, set(fail)
+
+    def _go(self, what, *a):
+        if what in self.fail:
+            raise JournalUnavailable("injected")
+        return getattr(self.inner, what)(*a)
+
+    def prepare(self, op, targets):
+        return self._go("prepare", op, targets)
+
+    def finalize(self, op):
+        return self._go("finalize", op)
+
+    def abort(self, op):
+        return self._go("abort", op)
+
+    def state(self):
+        return self._go("state")
+
+
+@pytest.fixture
+def journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'journal'}")
+    get_settings.cache_clear()
+    yield LocalDirJournal(tmp_path / "journal")
+    get_settings.cache_clear()
+
+
+def _use(monkeypatch, j):
+    monkeypatch.setattr(lifecycle, "current_journal", lambda: j)
+    monkeypatch.setattr(retention, "current_journal", lambda: j)
+    monkeypatch.setattr(lifecycle.time, "sleep", lambda s: None)
+
+
+def _identity(ids, name="Bさん"):
+    return str(_scalar("SELECT identity_id FROM memberships WHERE id = :m", m=ids[name]))
+
+
+def _counts():
+    return {"disabled": _scalar("SELECT count(*) FROM identities WHERE disabled_at IS NOT NULL"),
+            "tombstones": _scalar("SELECT count(*) FROM deletion_tombstones"),
+            "ops": _scalar("SELECT count(*) FROM deletion_journal_ops"),
+            "unconfirmed": _scalar("SELECT count(*) FROM deletion_journal_ops WHERE finalized_at IS NULL")}
+
+
+def test_account_deletion_is_recorded_outside_the_db_before_success(user_factory, journal):
+    owner, member, pid, ids = _scenario(user_factory)
+    registered(member)
+    assert member.post("/account/payment-destination", json=bank()).status_code == 201
+    me, dest = _identity(ids), str(_scalar("SELECT id FROM payment_destinations"))
+    r = delete_me(member)
+    assert r.status_code == 200 and r.json() == {"groups_left": 1, "destination_erased": True}  # 応答は従来どおり
+    st = journal.state()
+    assert not st.pending and len(st.finalized) == 1
+    (op, targets), = st.finalized.items()
+    assert sorted(targets) == [("destination", dest), ("identity", me)]  # 本人のものだけ(作成者には触れない)
+    assert _counts() == {"disabled": 1, "tombstones": 2, "ops": 1, "unconfirmed": 0}
+    assert _scalar("SELECT count(*) FROM deletion_tombstones WHERE op_id = :o", o=op) == 2
+    assert owner.get(f"/groups/{pid}").status_code == 200
+    blob = (journal.root / "journal.jsonl").read_text()
+    assert "Bさん" not in blob and "旅行" not in blob and ACCOUNT not in blob  # ID と時刻だけ
+
+
+def test_journal_write_failure_deletes_nothing(user_factory, journal, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    _use(monkeypatch, Faulty(journal, "prepare"))
+    r = delete_me(member)
+    assert r.status_code == 503 and r.json()["code"] == "DELETION_JOURNAL_UNAVAILABLE"
+    assert "injected" not in r.text  # 内部の文字列を出さない
+    assert _counts() == {"disabled": 0, "tombstones": 0, "ops": 0, "unconfirmed": 0}
+    assert member.get(f"/groups/{pid}").status_code == 200  # セッションも残る(もう一度試せる)
+    assert journal.state().records == []
+
+
+def test_failure_after_prepare_rolls_back_and_records_abort(user_factory, journal, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    _use(monkeypatch, journal)
+
+    def boom(*a, **kw):
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(account, "mark_if_orphaned", boom)
+    with pytest.raises(RuntimeError):
+        delete_me(member)
+    st = journal.state()
+    assert len(st.aborted) == 1 and not st.pending and not st.finalized
+    assert _counts() == {"disabled": 0, "tombstones": 0, "ops": 0, "unconfirmed": 0}
+    assert member.get(f"/groups/{pid}").status_code == 200
+
+
+def test_unconfirmed_deletion_is_not_success_and_is_reconciled_later(user_factory, journal, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    _use(monkeypatch, Faulty(journal, "finalize"))
+    r = delete_me(member)
+    assert r.status_code == 503 and r.json()["code"] == "DELETION_PENDING_CONFIRMATION"
+    assert _counts() == {"disabled": 1, "tombstones": 1, "ops": 1, "unconfirmed": 1}  # DB は commit 済み
+    assert member.get(f"/groups/{pid}").status_code == 401
+    assert len(journal.state().pending) == 1
+    with Session(get_engine()) as db:
+        # ジャーナルが止まったまま 30 日を過ぎても、未確定の削除済み一覧は消さない
+        for days in (31, 60):
+            assert retention.purge_retention(db, at=now() + timedelta(days=days))["deletion_tombstones"] == 0
+    assert _counts()["tombstones"] == 1
+    _use(monkeypatch, journal)  # 復旧
+    with Session(get_engine()) as db:
+        assert lifecycle.reconcile_journal(db) == {"finalized": 1, "pending": 0, "missing_in_journal": 0}
+        assert lifecycle.reconcile_journal(db) == {"finalized": 0, "pending": 0, "missing_in_journal": 0}  # 冪等
+        assert retention.purge_retention(db, at=now() + timedelta(days=29))["deletion_tombstones"] == 0
+        assert retention.purge_retention(db, at=now() + timedelta(days=31))["deletion_tombstones"] == 1
+    assert len(journal.state().finalized) == 1  # ジャーナルの記録は消さない(復元の正)
+
+
+def test_ambiguous_commit_failure_stays_pending_until_the_operator_resolves(user_factory, journal, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    _use(monkeypatch, journal)
+
+    def lost(db, op, **kw):
+        raise OperationalError("COMMIT", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(account, "commit_deletion", lost)
+    with pytest.raises(OperationalError):
+        delete_me(member)
+    assert _counts() == {"disabled": 0, "tombstones": 0, "ops": 0, "unconfirmed": 0}
+    with Session(get_engine()) as db:
+        # DB に操作の行が無い = commit されていないが、自動では取り消しにしない
+        assert lifecycle.reconcile_journal(db) == {"finalized": 0, "pending": 1, "missing_in_journal": 0}
+        assert lifecycle.abort_absent_ops(db, journal, older_than=timedelta(hours=1)) == 0  # まだ新しい
+        assert lifecycle.abort_absent_ops(db, journal, older_than=timedelta(0)) == 1
+    st = journal.state()
+    assert not st.pending and len(st.aborted) == 1
+
+
+def test_destination_erasure_retry_confirms_instead_of_404(user_factory, journal, monkeypatch):
+    u, other = user_factory(), user_factory()
+    for x in (u, other):
+        registered(x)
+        assert x.post("/account/payment-destination", json=bank()).status_code == 201
+    _use(monkeypatch, Faulty(journal, "finalize"))
+    r = u.delete("/account/payment-destination")
+    assert r.status_code == 503 and r.json()["code"] == "DELETION_PENDING_CONFIRMATION"
+    assert other.delete("/account/payment-destination").status_code == 503  # 他人の未確定は別の操作
+    _use(monkeypatch, journal)
+    assert u.delete("/account/payment-destination").status_code == 204  # 再送で確定する
+    assert len(journal.state().pending) == 1  # other の分は other の再送まで残る
+    assert u.delete("/account/payment-destination").status_code == 404  # 確定後は従来どおり
+    assert other.delete("/account/payment-destination").status_code == 204
+    st = journal.state()
+    assert len(st.finalized) == 2 and not st.pending and st.checkpoint.seq == 4  # 再送で記録を増やさない
+    assert _counts()["unconfirmed"] == 0
+
+
+def test_group_deletion_is_journaled_and_not_done_without_the_journal(user_factory, journal, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    gid = str(_scalar("SELECT id FROM groups WHERE public_id = :p", p=pid))
+    for u in (member, owner):
+        assert u.post(f"/groups/{pid}/leave").status_code == 204
+    _use(monkeypatch, Faulty(journal, "prepare"))
+    with Session(get_engine()) as db:
+        r = retention.purge_retention(db, at=now() + timedelta(days=31))
+    assert (r["groups"], r["groups_failed"]) == (0, 1)
+    assert _scalar("SELECT count(*) FROM groups") == 1  # 記録できなければ消さない
+    _use(monkeypatch, journal)
+    with Session(get_engine()) as db:
+        r = retention.purge_retention(db, at=now() + timedelta(days=31))
+    assert (r["groups"], r["groups_failed"]) == (1, 0)
+    assert journal.state().finalized_targets() == [("group", gid)]
+    assert _counts()["unconfirmed"] == 0
+
+
+def test_legacy_tombstones_are_kept_until_moved_into_the_journal(user_factory, tmp_path, monkeypatch):
+    owner, member, pid, ids = _scenario(user_factory)
+    assert delete_me(member).status_code == 200  # ジャーナル未設定(導入前)の退会
+    assert _scalar("SELECT op_id IS NULL FROM deletion_tombstones") is True
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'journal'}")
+    get_settings.cache_clear()
+    j = LocalDirJournal(tmp_path / "journal")
+    with Session(get_engine()) as db:
+        assert retention.purge_retention(db, at=now() + timedelta(days=31))["deletion_tombstones"] == 0
+        assert retention.import_legacy_tombstones(db) == 1
+        assert retention.import_legacy_tombstones(db) == 0
+        assert j.state().finalized_targets() == [("identity", _identity_of_disabled())]
+        assert retention.purge_retention(db, at=now() + timedelta(days=31))["deletion_tombstones"] == 1
+
+
+def _identity_of_disabled():
+    return str(_scalar("SELECT id FROM identities WHERE disabled_at IS NOT NULL"))
+
+
+def test_restore_reapplies_deletions_from_the_journal_after_the_db_is_rolled_back(user_factory, journal, tmp_path):
+    owner, member, pid, ids = _scenario(user_factory)
+    registered(member)
+    assert member.post("/account/payment-destination", json=bank()).status_code == 201
+    with get_engine().connect() as c:  # 「退会前のバックアップ」
+        backup = [tuple(r) for r in c.execute(text(
+            "SELECT id, wrapped_dek, nonce, ciphertext FROM payment_destination_versions"))]
+    me = _identity(ids)
+    assert delete_me(member).status_code == 200
+    # DB を失い、退会前のバックアップから戻した状態(DB 内の削除済み一覧と操作の記録も無い)
+    with get_engine().begin() as c:
+        c.execute(text("UPDATE identities SET disabled_at = NULL WHERE id = :i"), {"i": me})
+        c.execute(text("UPDATE memberships SET identity_id = :i WHERE id = :m"), {"i": me, "m": ids["Bさん"]})
+        for vid, dek, nonce, ct in backup:
+            c.execute(text("UPDATE payment_destination_versions SET wrapped_dek = :d, nonce = :n, ciphertext = :c "
+                           "WHERE id = :v"), {"d": dek, "n": nonce, "c": ct, "v": vid})
+        c.execute(text("UPDATE payment_destinations SET erased_at = NULL"))
+        c.execute(text("TRUNCATE deletion_tombstones, deletion_journal_ops"))
+    # 復元の手順(scripts/warilink_backup.py restore)と同じく、ジャーナルの確定済みの削除から一覧を作る
+    st = journal.state()
+    rows = [{"kind": k, "target_id": t, "op_id": op} for op, ts in st.finalized.items() for k, t in ts]
+    src = tmp_path / "from-journal.jsonl"
+    src.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with Session(get_engine()) as db:
+        assert retention.apply_tombstones(db, src) == {"identity": 1, "destination": 1, "group": 0}
+        assert retention.apply_tombstones(db, src) == {"identity": 0, "destination": 0, "group": 0}
+    assert _scalar("SELECT disabled_at IS NOT NULL FROM identities WHERE id = :i", i=me) is True
+    assert _scalar("SELECT count(*) FROM payment_destination_versions WHERE ciphertext IS NOT NULL") == 0
+    (op,) = st.finalized
+    assert _scalar("SELECT count(*) FROM deletion_tombstones WHERE op_id = :o", o=op) == 2
+    assert _counts()["unconfirmed"] == 0  # 戻した DB でも、確定済みとして期限削除できる
+
+
+def test_journal_cli_exit_codes(user_factory, journal, monkeypatch, capsys):
+    owner, member, pid, ids = _scenario(user_factory)
+    assert retention.main(["journal-verify"]) == 0
+    _use(monkeypatch, Faulty(journal, "finalize"))
+    assert delete_me(member).status_code == 503
+    monkeypatch.undo()
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{journal.root}")
+    get_settings.cache_clear()
+    assert retention.main(["journal-verify"]) == 1  # 未確定が残っている
+    assert retention.main(["journal-reconcile"]) == 0
+    out = capsys.readouterr().out
+    assert '"finalized": 1' in out and str(journal.root) not in out
+    (journal.root / "HEAD").write_text("{")
+    assert retention.main(["journal-verify"]) == 2  # 壊れている
+    monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
+    get_settings.cache_clear()
+    assert retention.main(["journal-verify"]) == 3  # 未設定
+    with pytest.raises(SystemExit):
+        retention.main(["journal-abort-absent"])  # 現用 DB であることの確認(--confirm-live-db)が必須

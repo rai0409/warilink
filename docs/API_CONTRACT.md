@@ -251,6 +251,15 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | DELETE | `/account/payment-destination` | 消去(全版の暗号文と包んだ鍵を消す) | 登録済み本人 + CSRF。Passkey の機能が有効なら(振込先の機能の状態に関係なく)step-up も必須。Passkey の機能が停止中の場合だけ、step-up なしで登録済み所有者による不可逆消去を許可 |
 | GET | `/settlements/{transfer_id}/destination` | 受取人が共有した振込先・照合コード・変更の警告 | **その送金の支払者だけ**(受取人 403、他は 404) |
 
+削除ジャーナル(STEP 01、2026-11-04)。`DELETE /account` と `DELETE /account/payment-destination` は、DB の外の削除ジャーナル
+(`WARILINK_DELETION_JOURNAL`)に記録を確定してから 200 / 204 を返す。正常時の応答・ステータスは変えない。追加エラーコード:
+
+- `DELETION_JOURNAL_UNAVAILABLE`(503): 削除の前に記録を保存できなかった。**何も削除していない**(セッションも有効なまま)。再試行してよい。
+- `DELETION_PENDING_CONFIRMATION`(503): 削除は DB で完了したが、記録の確定を確認できなかった。成功とは返さない。
+  記録の確定は定期ジョブ(reconcile)が再試行する。振込先は同じ `DELETE` の再送で確定でき、確定できれば 204
+  (以後は従来どおり 404)。退会はこの時点でセッションが失効しているため、再送は 401。
+- ジャーナル未設定(開発・テストだけで許す)のときは従来どおり。本番は未設定なら起動しない。
+
 - V0 の機能フラグ: 振込先の登録・変更・共有設定・全桁表示・支払者への表示は、Passkey と振込先の**両方**が有効なときだけ。どちらかが停止中なら、認証(401)・CSRF(403)を通った後に `503 FEATURE_DISABLED`。本人の伏せ字の取得(GET)と既存データの消去は停止中も残す。
 
 - step-up: 直近 `step_up_max_age_seconds`(既定 600 秒)以内に Passkey で確認したセッション。満たさなければ 401 `STEP_UP_REQUIRED`
