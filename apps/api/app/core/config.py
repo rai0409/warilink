@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     expired_session_retention_days: int = 30  # 失効・期限切れのセッションを消すまで
     expired_invite_retention_days: int = 30  # 失効・期限切れ・使い切りの招待を消すまで
     tombstone_retention_days: int = 30  # 削除済み一覧(バックアップの保持日数と同じにする)
+    # DB の外の削除ジャーナル(app/ops/deletion_journal.py)。local:/絶対パス。本番は必須
+    deletion_journal: str | None = None
     orphaned_group_retention_days: int = 30  # 参加者がいなくなったグループを完全に削除するまで
     closed_group_retention_days: int = 365  # 終了したグループを完全に削除するまで
     ocr_job_max_attempts: int = 3
@@ -218,6 +220,9 @@ def production_problems(s: "Settings") -> list[str]:
         out.extend(key_problems(s))
     out.extend(rate_limit_problems(s))
     out.extend(operations_problems(s))
+    from app.ops.deletion_journal import journal_problems  # noqa: PLC0415
+
+    out.extend(journal_problems(s.deletion_journal))
     if s.feature_ads or s.feature_billing:
         out.append("広告・課金は未実装のため本番で有効にできません(WARILINK_FEATURE_ADS / WARILINK_FEATURE_BILLING)")
     return out

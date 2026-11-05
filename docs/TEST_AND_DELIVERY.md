@@ -424,3 +424,36 @@
 - ゲートの一覧と判定: `docs/FREE_RELEASE_GATES.md`(`FREE_RELEASE=NO_GO`)。
 - 実行記録(2026-11-03、コミット f4bdab8、ローカル macOS arm64、使い捨て DB): API の pytest 376 件成功、web の typecheck・build 成功、E2E 42 件成功(隔離した E2E 用 DB)。独立レビュー(P01+P02 と P05)はどちらも PASS。
 - 商品を削除したときは、その商品だけを対象にした値引き等の対象からも外す。対象がすべて消えた調整は全商品へ広げず、「削除した商品(選び直してください)」と示して保存できないままにする(`apps/web/e2e/itemized.spec.ts`。修正前のコードでは失敗することを確認)。
+
+## STEP 01: 削除ジャーナルの耐久契約と安全な復元(2026-11-04)
+
+設計は `docs/DATA_MODEL.md` §11 と `apps/api/app/ops/deletion_journal.py` の冒頭。削除の 3 つの経路(退会・振込先の消去・グループの
+完全な削除)は、DB の外へ `prepare` → DB の削除を commit → `finalize` の後に成功を返す。
+
+| 確かめたこと | テスト |
+|---|---|
+| 形式: 連番・直前の hash・自分の hash、ID と UTC の時刻だけ、再試行の重複なし、取り消した操作は再開できない | `tests/ops/test_deletion_journal.py` |
+| 欠落・改ざんの検出: 1 件の書き換え(hash を計算し直しても検出)・途中の欠落・順序の入れ替え・切り詰め・HEAD の欠け/不一致・壊れた行 | 同上 |
+| 落ちたときの回復: HEAD を書く前に落ちた(1 つ遅れ)・行の途中で落ちた(次の追記で切り捨て)。4 プロセスの同時追記で 1 本の連鎖 | 同上 |
+| 書けないときは成功にしない(読み取り専用・置き場所を作れない) | 同上 |
+| 退会: 記録を確定してから 200(応答のキーは従来どおり)。本人の ID だけを記録し、他人には触れない | `tests/api/test_account_deletion.py`(削除ジャーナルの節) |
+| `prepare` を書けない → 503 で何も削除しない / 変更の途中の失敗 → ロールバックして abort / `finalize` を書けない → 503(成功と返さない)、後で reconcile / commit の結果が曖昧 → 未確定のまま残し、自動で取り消さない | 同上 |
+| 振込先の消去の再送: 未確定なら確定して 204、確定後は従来どおり 404。他人の未確定は確定しない | 同上 |
+| グループの完全な削除: 記録できなければ消さない(`groups_failed`)、記録できれば確定まで | 同上 |
+| 削除済み一覧の期限削除: ジャーナルが止まったまま 31 日・60 日を過ぎても未確定の行は消さない。ジャーナル導入前の行は移すまで消さない | 同上 |
+| 復元: 古い状態に戻した DB へ、ジャーナルの確定済みの削除を再適用(冪等)し、戻した DB でも確定済みとして扱う | 同上 |
+| 復元の拒否(DB を作る前): ジャーナルが無い・未確定あり・別のジャーナル・改ざん・バックアップより短い・HEAD の破損。旧形式は本番で明示的な承知が必要 | `tests/ops/test_backup_script.py`(削除ジャーナルの節) |
+| 本番: ジャーナルが未設定・相対パス・未対応の形式なら起動しない。バックアップも拒否 | `tests/test_production_config.py`・`tests/ops/test_backup_script.py` |
+| 運用コマンドの終了コード(`journal-verify` など) | `tests/api/test_account_deletion.py::test_journal_cli_exit_codes` |
+
+- 実行記録(2026-11-04、base main `aea833c`、ローカル macOS arm64・Python 3.13、使い捨て DB `warilink_test_ui`):
+  API の pytest 416 件成功、Ruff・mypy 成功、OpenAPI はコミット済みと一致、migration と model の差分なし。
+  わざと保証を外した 8 通りの変更(finalize を飛ばす・期限削除を絞らない・prepare をしない・DB に無い未確定を自動で取り消す・
+  commit の失敗で取り消す・finalize の失敗を成功にする・復元で未確定を無視する・復元でチェックポイントを確かめない)は、
+  どれもテストが失敗することを確かめた。
+- 復元訓練(`drill`、隔離した一時コンテナ `warilink-drill-db-step01`、終了後に削除): PASS(6.8 秒、合成データ 17 行・画像 1 枚、
+  `journal.status=verified`)。
+- 判定: `STEP01_CODE` はこのブランチの CI 結果で判定する。`OFFSITE_STORAGE_LIVE` / `KMS_LIVE` は **BLOCKED**(ローカルの
+  ジャーナルは外部保管ではない。外部保管は STEP 02)、`FREE_RELEASE=NO_GO`。
+- 残る制約: 記録の末尾(バックアップより後)を HEAD ごと失うと検出できない。分散トランザクションではないため、commit の直後に
+  落ちた操作は reconcile まで未確定として残る(その間は成功を返さず、復元を拒否する)。

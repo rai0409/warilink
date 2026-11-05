@@ -34,7 +34,16 @@ from app.models.tables import (
     PaymentDestinationVersion,
     TransferDestinationPin,
 )
-from app.modules.groups.lifecycle import add_tombstone
+from app.modules.groups.lifecycle import (
+    abort_deletion,
+    add_tombstone,
+    begin_deletion,
+    commit_deletion,
+    confirm_pending_deletions,
+    deletion_unconfirmed,
+    journal_unavailable,
+)
+from app.ops.deletion_journal import JournalError
 
 from . import crypto
 
@@ -291,12 +300,33 @@ def erase(request: Request, db: Session = Depends(get_db), ident: Identity = Dep
         require_step_up(request, db)
     d = _mine(db, ident, for_update=True)
     if d is None:
+        # 前回の消去が commit 済みで記録の確定だけが残っていれば、ここで確定して成功を返す(再送の意味を保つ)
+        erased = list(db.execute(select(PaymentDestination.id).where(
+            PaymentDestination.owner_identity_id == ident.id, PaymentDestination.erased_at.is_not(None))).scalars())
+        try:
+            if confirm_pending_deletions(db, "destination", erased):
+                return
+        except JournalError:
+            raise deletion_unconfirmed() from None
         raise not_found()
-    crypto_erase(db, d)
-    add_tombstone(db, "destination", d.id)  # バックアップから戻したときに、この消去を再適用する
-    # V0 の例外であることを監査に残す。復号・共有・再利用できる状態は一切残さない。
-    _audit(db, ident, "destination.erase", d.id, legacy_feature_disabled=legacy_cleanup)
-    db.commit()
+    try:
+        op = begin_deletion(db, [("destination", d.id)])  # 変更の前に DB の外へ記録する
+    except JournalError:
+        db.rollback()
+        raise journal_unavailable() from None
+    try:
+        crypto_erase(db, d)
+        add_tombstone(db, "destination", d.id, op_id=op)  # バックアップから戻したときに、この消去を再適用する
+        # V0 の例外であることを監査に残す。復号・共有・再利用できる状態は一切残さない。
+        _audit(db, ident, "destination.erase", d.id, legacy_feature_disabled=legacy_cleanup)
+    except Exception:
+        db.rollback()
+        abort_deletion(op)
+        raise
+    try:
+        commit_deletion(db, op)
+    except JournalError:
+        raise deletion_unconfirmed() from None
 
 
 def crypto_erase(db: Session, d: PaymentDestination) -> None:
