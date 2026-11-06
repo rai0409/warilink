@@ -227,7 +227,11 @@ def test_concurrent_processes_keep_one_valid_chain(tmp_path):
 def test_configuration():
     assert journal_from_url(None) is None and journal_from_url("") is None
     assert isinstance(journal_from_url("local:/srv/j"), LocalDirJournal)
-    for bad in ("s3://bucket/j", "local:", "local:relative", "/srv/j"):
+    # STEP 02: s3://バケット/接頭辞 を受け付ける(作るだけでは接続しない)。接頭辞の無いもの・不正な名前は拒否
+    s3 = journal_from_url("s3://warilink-journal-test/deletions")
+    assert s3 is not None and s3.name == "s3" and s3.client_ is None
+    for bad in ("s3://bucket", "s3://Bad_Bucket/j", "s3://bucket/../j", "gs://bucket/j", "local:", "local:relative",
+                "/srv/j"):
         with pytest.raises(JournalConfigError):
             journal_from_url(bad)
         assert journal_problems(bad)

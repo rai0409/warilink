@@ -18,7 +18,13 @@
   復元は全ファイルの認証を先に済ませてから、復号した内容を pg_restore へ直接流す(平文の一時ファイルを作らない)。
 - 平文のバックアップ(--insecure-plaintext、format warilink-backup-1)は開発用。
   本番(WARILINK_ENVIRONMENT=production)では拒否。
-- 外部保管: WARILINK_BACKUP_OFFSITE(現状は local:ディレクトリ だけ)。本番で未設定なら終了コード 4(不完全)。
+- 外部保管: WARILINK_BACKUP_OFFSITE(local:ディレクトリ / s3://バケット/接頭辞)。S3 は WARILINK_AWS_LIVE=1 の
+  ときだけ接続する。本番で未設定なら終了コード 4(不完全)。本番の S3 はバケットの前提条件(バージョン管理・
+  Object Lock・KMS の既定の暗号化)を満たさなければ拒否する。置いた後に受領記録(世代と SHA-256)を置き、
+  その世代を外部から読み戻して SHA-256・暗号の認証・ファイルの一覧・削除ジャーナルのチェックポイントを確かめる。
+  確かめられなければ終了コード 4 で、成功を記録しない(STEP 02)。
+- 鍵: WARILINK_BACKUP_KMS_KEY_ID があれば AWS KMS(app/ops/aws_kms.py)、無ければ WARILINK_BACKUP_KEYS。
+  復元は manifest の key.provider / key_id で鍵の提供元を選ぶ(環境変数の鍵で作った過去のバックアップも開ける)。
 - 復元は DB の外の削除済み一覧(--tombstones)が必須。バックアップ時点の一覧より古ければ拒否し、復元後に必ず再適用する。
 - 削除ジャーナル(STEP 01、--journal または WARILINK_DELETION_JOURNAL): backup は manifest.enc にその時点の
   チェックポイントを入れる(本番でジャーナルが無ければ拒否)。restore は DB を作る前に、記録の連番・hash・HEAD、
@@ -49,6 +55,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "apps" / "api"))
 
+from app.ops.aws_kms import NAME as AWS_KMS  # noqa: E402
+from app.ops.aws_kms import AwsKmsProvider  # noqa: E402
 from app.ops.backup_crypto import (  # noqa: E402
     ALGORITHM,
     CHUNK_BYTES,
@@ -68,7 +76,15 @@ from app.ops.deletion_journal import (  # noqa: E402
     journal_from_url,
     verify_checkpoint,
 )
-from app.ops.offsite import LocalDirStorage, OffsiteError, storage_from_env, upload  # noqa: E402
+from app.ops.offsite import (  # noqa: E402
+    LocalDirStorage,
+    OffsiteError,
+    fetch,
+    put_receipt,
+    read_receipt,
+    storage_from_env,
+    upload,
+)
 
 LEGACY_FORMAT = "warilink-backup-1"
 PROTECTED = {"postgres", "template0", "template1", "warilink", "warilink_test", "warilink_e2e"}
@@ -198,14 +214,32 @@ def enc_path(name: str) -> str:
 
 
 def key_provider(args: argparse.Namespace):
-    """訓練・テストでは args.provider(FakeKmsProvider など)を使い、通常は環境変数の鍵を使う。"""
+    """バックアップを作る鍵。訓練・テストでは args.provider、WARILINK_BACKUP_KMS_KEY_ID があれば AWS KMS、
+    無ければ環境変数の鍵。"""
     provider = getattr(args, "provider", None)
     if provider is not None:
         return provider
     try:
+        if os.environ.get("WARILINK_BACKUP_KMS_KEY_ID"):
+            return AwsKmsProvider.from_env()
         return EnvKeyProvider.from_env()
     except KeyConfigError as e:
         raise Refused(str(e)) from None
+
+
+def unwrap_provider(args: argparse.Namespace, key: dict):
+    """復元で鍵をほどく提供元を、manifest の key.provider で選ぶ(今の設定の鍵ではなく、作ったときの鍵)。"""
+    provider = getattr(args, "provider", None)
+    if provider is not None:
+        return provider
+    try:
+        if key.get("provider") == "env":
+            return EnvKeyProvider.from_env()
+        if key.get("provider") == AWS_KMS:
+            return AwsKmsProvider.from_env()
+    except KeyConfigError as e:
+        raise Refused(str(e)) from None
+    raise Refused(f"未対応の鍵の提供元です: {str(key.get('provider'))[:32]}")
 
 
 def tombstones_latest(args: argparse.Namespace, db: str) -> str | None:
@@ -300,11 +334,18 @@ def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
             storage = storage_from_env()
         except OffsiteError as e:
             raise Refused(str(e)) from None
+    if storage is not None and is_production() and hasattr(storage, "check_bucket"):
+        problems = storage.check_bucket()  # 設定は変えない。確かめるだけ
+        if problems:
+            raise Refused("外部保管の前提条件を満たしていません: " + " / ".join(problems))
     (out / "receipts").mkdir(parents=True, exist_ok=True)
     os.chmod(out, 0o700)
     backup_id, created_at = uuid.uuid4().hex, datetime.now(UTC).isoformat()
     dek = new_dek()
-    key_id, wrapped = provider.wrap(dek, dek_aad(backup_id, created_at, provider.active_key_id()))
+    try:
+        key_id, wrapped = provider.wrap(dek, dek_aad(backup_id, created_at, provider.active_key_id()))
+    except KeyConfigError as e:
+        raise Refused(str(e)) from None
     journal_cp = journal_checkpoint(args)  # ダンプの前(この後の削除は、復元のときにジャーナルから再適用する)
     before = snapshot(args, args.db)
     latest_tomb = tombstones_latest(args, args.db)
@@ -352,8 +393,19 @@ def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
     del dek
     offsite = None
     if storage is not None and not missing:
+        prefix = f"{created_at[:10]}-{backup_id}"
         try:
-            offsite = upload(storage, out, f"{created_at[:10]}-{backup_id}")
+            versions: dict[str, dict] = {}
+            offsite = upload(storage, out, prefix, versions=versions)
+            with tempfile.TemporaryDirectory(prefix="warilink-receipt-") as tmp:
+                receipt = put_receipt(storage, prefix, versions, Path(tmp))
+            # 置いた世代を外部から読み戻し、暗号の認証まで確かめてから成功とする
+            with tempfile.TemporaryDirectory(prefix="warilink-readback-") as tmp:
+                problems, _ = verify_offsite_copy(args, storage, prefix, receipt["version_id"], Path(tmp),
+                                                  expected_receipt_sha256=receipt["sha256"])
+            if problems:
+                raise OffsiteError("外部から読み戻した内容を確かめられません: " + " / ".join(problems[:5]))
+            offsite = {**offsite, "prefix": prefix, "receipt": receipt, "readback": "verified"}
         except (OffsiteError, OSError) as e:
             print(json.dumps({"backup": str(out), "offsite_failed": str(e)}, ensure_ascii=False))
             if is_production():
@@ -374,6 +426,63 @@ def _cmd_backup_encrypted(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- restore
 
 
+def verify_offsite_copy(args: argparse.Namespace, storage, prefix: str, receipt_version: str | None, dest: Path, *,
+                        expected_receipt_sha256: str | None = None) -> tuple[list[str], dict]:
+    """外部保管の受領記録の世代を指定して dest(空)へ取得し、検証する。DB には触れない。
+
+    確かめること: 受領記録の SHA-256(分かっているとき)、各ファイルの世代と実バイトの SHA-256、ファイルの一覧が
+    manifest と一致すること、暗号の認証(全ファイルの復号)、撮影時点の画像がそろっていること、
+    削除ジャーナルがバックアップ時点のチェックポイントを含むこと。戻り値は (問題の一覧, 要約)。"""
+    summary: dict = {"prefix": prefix, "receipt_version": receipt_version}
+    try:
+        with tempfile.TemporaryDirectory(prefix="warilink-receipt-read-") as rt:  # 取得先には一覧のファイルだけを置く
+            receipt, digest = read_receipt(storage, prefix, receipt_version, Path(rt))
+    except OffsiteError as e:
+        return [f"受領記録: {e}"], summary
+    summary["receipt_sha256"] = digest
+    if expected_receipt_sha256 is not None and digest != expected_receipt_sha256:
+        return ["受領記録の SHA-256 が置いたときと一致しません(世代のすり替えのおそれ)"], summary
+    problems = fetch(storage, prefix, receipt, dest)
+    if problems:
+        return problems, summary
+    try:
+        outer = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["manifest.json を読めません"], summary
+    expected = {enc_path(n) for n in outer.get("files", {})} | {"manifest.json"}
+    if set(receipt["objects"]) != expected:
+        return ["受領記録のファイルの一覧が manifest と一致しません(追加・欠落)"], summary
+    if outer.get("format") != FORMAT:
+        return ["未対応のバックアップ形式です"], summary
+    try:
+        inner, dek = open_encrypted(args, dest, outer)
+        problems = verify_encrypted(dest, outer, inner, dek)
+    except BackupCryptoError as e:
+        return [str(e)], summary
+    del dek
+    images = {n.split("/", 1)[1] for n in inner["files"] if n.startswith("receipts/")}
+    lacking = set(inner["live_image_keys"]) - images - set(inner["missing_images_at_backup"])
+    if lacking:
+        problems.append(f"撮影時点の画像が {len(lacking)} 枚そろっていません")
+    raw = inner.get("journal_checkpoint")
+    summary["journal_checkpoint_seq"] = raw["seq"] if raw else None
+    if raw is not None:
+        try:
+            journal = journal_for(args)
+        except Refused as e:
+            journal, problems = None, [*problems, str(e)]
+        if journal is None:
+            problems.append("削除ジャーナルが無いため、バックアップ時点のチェックポイントを確かめられません")
+        else:
+            try:
+                verify_checkpoint(journal.state(), Checkpoint.from_json(raw))
+            except JournalError as e:
+                problems.append(f"削除ジャーナル: {e}")
+    summary.update({"backup_id": outer.get("backup_id"), "files": len(receipt["objects"]),
+                    "alembic_version": inner.get("alembic_version")})
+    return problems, summary
+
+
 def guard_target(args: argparse.Namespace, name: str) -> None:
     check_name(name)
     if name in PROTECTED or not name.startswith(RESTORE_PREFIX):
@@ -385,7 +494,7 @@ def open_encrypted(args: argparse.Namespace, src: Path, outer: dict) -> tuple[di
     if outer.get("cipher", {}).get("algorithm") != ALGORITHM:
         raise BackupCryptoError("未対応の暗号方式です")
     key = outer["key"]
-    provider = key_provider(args)
+    provider = unwrap_provider(args, key)
     dek = provider.unwrap(key["key_id"], base64.b64decode(key["wrapped_dek"]),
                           dek_aad(outer["backup_id"], outer["created_at"], key["key_id"]))
     m = outer["files"].get("manifest")

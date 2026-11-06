@@ -103,7 +103,7 @@ def test_optional_features_are_available_when_enabled(monkeypatch, name):
         ({"tombstone_retention_days": 7}, "TOMBSTONE_RETENTION_DAYS"),
         ({"deletion_journal": None}, "WARILINK_DELETION_JOURNAL"),
         ({"deletion_journal": "local:relative/dir"}, "絶対パス"),
-        ({"deletion_journal": "s3://bucket/journal"}, "WARILINK_DELETION_JOURNAL"),
+        ({"deletion_journal": "s3://bucket"}, "接頭辞"),  # STEP 02: s3://バケット/接頭辞 は可。接頭辞の無いものは拒否
         ({"expired_session_retention_days": 0}, "EXPIRED_SESSION_RETENTION_DAYS"),
         ({"database_url": "postgresql+psycopg://postgres:s3cret-from-env@db.internal/warilink"}, "スーパーユーザー"),
         ({"feature_ocr": True, "receipt_storage_dir": "./var/receipts"}, "RECEIPT_STORAGE_DIR"),

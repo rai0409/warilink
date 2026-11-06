@@ -7,7 +7,7 @@
 判定は PASS / FAIL / BLOCKED / UNEXECUTED のどれか。**未実施を PASS にしない**。証拠が手元の実行だけのものは「ローカル」と書く。
 ここにある PASS は、開発環境でのテストの結果です。本番で動いていることを示すものではありません。
 
-**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-04、ブランチ `feat/warilink-step01-deletion-journal-20261104`)
+**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-06、ブランチ `feat/warilink-step02-s3-kms-20261104`)
 
 | ゲート | 判定 | 証拠・残っていること |
 |---|---|---|
@@ -19,7 +19,8 @@
 | 保存期限の自動削除ジョブ | BLOCKED | `RETENTION_RUNTIME=BLOCKED`。導入先でジョブが未登録。画面はジョブの実績が無い間は自動削除を約束しない |
 | 暗号化バックアップと削除の再適用 | PASS(ローカル、2026-10-31、PR C #14) | `ENCRYPTED_BACKUP_TEST=PASS`、`RESTORE_DRILL=PASS`(隔離した一時コンテナ)。記録は `docs/TEST_AND_DELIVERY.md`「PR C」 |
 | 削除の記録(DB の外の削除ジャーナル・削除の前後の記録・復元時の検査) | PASS(ローカル、2026-11-04、STEP 01、使い捨て DB で API テスト 416 件・隔離した一時コンテナで復元訓練) | `docs/TEST_AND_DELIVERY.md`「STEP 01」。ローカルディレクトリの実装だけで、外部保管ではない(次の行)。このブランチの CI は未実行(push していない) |
-| バックアップ・削除履歴の外部保管、本番相当の復元 | BLOCKED | `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` / `RPO_RTO_PROVEN` が BLOCKED(保管先・KMS が未選定) |
+| S3・KMS の外部保管のコード(偽の S3・KMS での検証) | PASS(ローカル、2026-11-06、STEP 02。AWS へは接続していない) | `docs/TEST_AND_DELIVERY.md`「STEP 02」。偽物での成功は実際の外部保管の証拠ではない(次の行)。このブランチの CI は未実行 |
+| バックアップ・削除履歴の外部保管、本番相当の復元 | BLOCKED | `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` / `RPO_RTO_PROVEN` が BLOCKED(実 AWS の承認・予算・検証用の資格情報が無い。バケット・鍵・IAM は未作成) |
 | 通知・監視 | BLOCKED | `MONITOR_ALERT_LIVE=BLOCKED`(通知先が未選定) |
 | 利用規約・プライバシーポリシー・問い合わせ先 | BLOCKED | 画面は「準備中」。下書きは `docs/legal/`、決める項目は `docs/legal/README.md` の `OWNER_APPROVAL_REQUIRED` |
 | LICENSE(商用で使う権利) | BLOCKED | リポジトリは独自の非商用ライセンス。権利者の判断が必要 |

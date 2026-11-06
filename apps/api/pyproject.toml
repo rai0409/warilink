@@ -25,6 +25,10 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
+# AWS(S3 の外部保管・KMS)を使う運用ジョブ専用(STEP 02)。API と CI には入れない。接続は WARILINK_AWS_LIVE=1 のときだけ
+aws = [
+  "boto3>=1.35",
+]
 # OCR ワーカー専用(API コンテナには入れない)。paddlepaddle は公式配布元から取得する
 ocr = [
   "paddlepaddle==3.3.1",

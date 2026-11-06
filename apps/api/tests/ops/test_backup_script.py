@@ -5,8 +5,11 @@ pg_dump・psql を置き換え、暗号化の形式・改ざんの検出・復�
 """
 
 import argparse
+import base64
 import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import uuid
@@ -14,9 +17,19 @@ from pathlib import Path
 
 import pytest
 
-from app.ops.backup_crypto import FakeKmsProvider
+from app.ops.backup_crypto import BackupCryptoError, FakeKmsProvider
 from app.ops.deletion_journal import LocalDirJournal
 from app.ops.offsite import LocalDirStorage
+from app.ops.s3_storage import S3Location, S3Storage
+
+from .test_aws_kms import FakeKms
+from .test_s3_storage import BUCKET as FAKE_BUCKET
+from .test_s3_storage import (
+    FakeS3,
+    no_network,  # noqa: F401 - このモジュールでも接続を禁止する(autouse)
+)
+
+S3_LOC = S3Location(FAKE_BUCKET, "backups/prod")
 
 SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "warilink_backup.py"
 
@@ -187,7 +200,7 @@ def test_backup_status_requires_complete_verified_offsite(mod, tmp_path, monkeyp
     monkeypatch.setattr(mod, "record_run", lambda args, db, job, *, ok: runs.append(ok))
     storage = None if case in ("no_offsite", "local") else LocalDirStorage(tmp_path / "remote")
     if case == "upload_failure":
-        def fail(*args):
+        def fail(*args, **kwargs):
             raise mod.OffsiteError("failed")
 
         monkeypatch.setattr(mod, "upload", fail)
@@ -316,3 +329,157 @@ def test_legacy_backups_without_a_checkpoint_are_not_silently_trusted(mod, tmp_p
     with pytest.raises(mod.Refused, match="--accept-legacy-backup"):
         mod.journal_rows(_args(), legacy)
     assert mod.journal_rows(_args(accept_legacy_backup=True), legacy)[0]["status"] == "verified_without_checkpoint"
+
+
+# ---------------------------------------------------------------- S3 の外部保管・KMS(STEP 02。偽の S3・KMS、接続なし)
+
+def _last_json(capsys) -> dict:
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+
+def test_backup_to_s3_is_success_only_after_reading_back_the_recorded_versions(mod, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+    runs = []
+    monkeypatch.setattr(mod, "record_run", lambda args, db, job, *, ok: runs.append(ok))
+    s3, kms = FakeS3(), FakeKmsProvider()
+    out, rc = _make(mod, tmp_path, kms, storage=S3Storage(s3, S3_LOC))
+    assert rc == 0 and runs == [True]
+    off = _last_json(capsys)["offsite"]
+    assert off["readback"] == "verified" and off["uploaded"] == 5
+    receipt = off["receipt"]
+    assert receipt["version_id"] and receipt["key"].endswith("/upload-receipt.json")
+    puts = [k for op, k in s3.calls if op == "put"]
+    assert puts[-2].endswith("/manifest.json") and puts[-1].endswith("/upload-receipt.json")  # manifest → 受領記録
+    blob = b"".join(v["data"] for vs in s3.store.values() for v in vs)
+    assert b"PGDMP" not in blob and b"jpeg-a.jpg" not in blob  # 外部には暗号文だけ
+    # 隔離した取得: 記録した世代を空のディレクトリへ取り、検証する(DB には触れない)
+    dest = tmp_path / "fetched"
+    problems, summary = mod.verify_offsite_copy(_args(provider=kms), S3Storage(s3, S3_LOC), off["prefix"],
+                                                receipt["version_id"], dest, expected_receipt_sha256=receipt["sha256"])
+    assert problems == [] and summary["files"] == 5 and summary["journal_checkpoint_seq"] == 0
+    assert mod.created == []
+    # 受領記録を差し替えられても、記録した SHA-256 と合わなければ拒否する
+    s3.overwrite(f"backups/prod/{receipt['key']}", b'{"format": "warilink-offsite-receipt-1"}')
+    latest = s3.store[f"backups/prod/{receipt['key']}"][-1]["id"]
+    problems, _ = mod.verify_offsite_copy(_args(provider=kms), S3Storage(s3, S3_LOC), off["prefix"], latest,
+                                          tmp_path / "f2", expected_receipt_sha256=receipt["sha256"])
+    assert problems and "受領記録" in problems[0]
+
+
+@pytest.mark.parametrize("damage", ["tampered_read", "access_denied_on_read", "journal_swapped"])
+def test_backup_without_a_verified_readback_is_not_success(mod, tmp_path, monkeypatch, capsys, damage):
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+    runs = []
+    monkeypatch.setattr(mod, "record_run", lambda args, db, job, *, ok: runs.append(ok))
+    s3 = FakeS3()
+    if damage == "tampered_read":
+        orig = s3.get_object
+
+        def get_object(**kw):  # 読み戻しのときだけ db.dump.enc を壊す
+            r = orig(**kw)
+            if kw["Key"].endswith("db.dump.enc"):
+                data = r["Body"].read()
+                r["Body"] = io.BytesIO(bytes([data[0] ^ 1]) + data[1:])
+                r.pop("ChecksumSHA256")
+            return r
+
+        s3.get_object = get_object
+    elif damage == "access_denied_on_read":
+        s3.fail["get_object"] = ["AccessDenied"] * 20
+    else:  # バックアップの後、読み戻しの前に削除ジャーナルを別物へ差し替えた
+        j = _journal(tmp_path)
+        _deleted(j, 1)
+        orig_upload = mod.upload
+
+        def upload_then_swap(*a, **kw):
+            r = orig_upload(*a, **kw)
+            monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{tmp_path / 'other-journal'}")
+            return r
+
+        monkeypatch.setattr(mod, "upload", upload_then_swap)
+    _, rc = _make(mod, tmp_path, FakeKmsProvider(), storage=S3Storage(s3, S3_LOC))
+    assert rc == 4 and runs == [False]  # 成功を記録しない
+    report = capsys.readouterr().out
+    assert "offsite_failed" in report and "backups/prod" not in report and FAKE_BUCKET not in report
+
+
+def test_production_refuses_a_bucket_without_versioning_lock_and_kms(mod, tmp_path, monkeypatch):
+    monkeypatch.setenv("WARILINK_ENVIRONMENT", "production")
+    s3 = FakeS3(versioning=False, lock=None, sse="AES256")
+    with pytest.raises(mod.Refused, match="前提条件"):
+        _make(mod, tmp_path, FakeKmsProvider(), storage=S3Storage(s3, S3_LOC))
+    assert not [c for c in s3.calls if c[0] == "put"]
+
+
+def test_kms_backups_restore_by_manifest_provider_and_env_key_backups_still_open(mod, tmp_path, monkeypatch, capsys):
+    kms_client = FakeKms()
+    arn = kms_client.create_key("alias/warilink-backup")
+    monkeypatch.setattr(mod.AwsKmsProvider, "from_env",
+                        classmethod(lambda cls, env=None, client=None: cls(
+                            kms_client, os.environ.get("WARILINK_BACKUP_KMS_KEY_ID"))))
+    env_key = base64.b64encode(os.urandom(32)).decode()
+    # 1. 環境変数の鍵で作った(STEP 02 より前の)バックアップ
+    monkeypatch.setenv("WARILINK_BACKUP_KEYS", f"old:{env_key}")
+    monkeypatch.setenv("WARILINK_BACKUP_ACTIVE_KEY", "old")
+    legacy, rc = _make(mod, tmp_path, None, name="legacy")
+    assert rc == 0 and json.loads((legacy / "manifest.json").read_text())["key"]["provider"] == "env"
+    # 2. KMS に切り替えた後のバックアップ(manifest には ARN を書く)
+    monkeypatch.setenv("WARILINK_BACKUP_KMS_KEY_ID", "alias/warilink-backup")
+    kmsb, rc = _make(mod, tmp_path, None, name="kms")
+    key = json.loads((kmsb / "manifest.json").read_text())["key"]
+    assert rc == 0 and key == {**key, "provider": "aws-kms", "key_id": arn}
+    # 復元は manifest の提供元で鍵をほどく(今の設定が KMS でも、古い環境変数の鍵のバックアップを開ける)
+    for d in (legacy, kmsb):
+        inner, dek = mod.open_encrypted(_args(), d, json.loads((d / "manifest.json").read_text()))
+        assert mod.verify_encrypted(d, json.loads((d / "manifest.json").read_text()), inner, dek) == []
+    # 古い環境変数の鍵を消すと、その鍵のバックアップは開けない(拒否。KMS のバックアップは開ける)
+    monkeypatch.delenv("WARILINK_BACKUP_KEYS")
+    with pytest.raises(mod.Refused, match="WARILINK_BACKUP_KEYS"):
+        mod.open_encrypted(_args(), legacy, json.loads((legacy / "manifest.json").read_text()))
+    mod.open_encrypted(_args(), kmsb, json.loads((kmsb / "manifest.json").read_text()))
+    # テスト用の偽 KMS(fake-kms)で作ったものは、提供元を渡さなければ開かない
+    fake, _ = _make(mod, tmp_path, FakeKmsProvider(), name="fake")
+    with pytest.raises(mod.Refused, match="未対応の鍵の提供元"):
+        mod.open_encrypted(_args(), fake, json.loads((fake / "manifest.json").read_text()))
+    # 鍵 ID を書き換えた manifest は KMS が拒否する
+    outer = json.loads((kmsb / "manifest.json").read_text())
+    other = kms_client.create_key()
+    outer["key"]["key_id"] = other
+    with pytest.raises(BackupCryptoError):
+        mod.open_encrypted(_args(), kmsb, outer)
+
+
+FETCH = SCRIPT.parent / "warilink_fetch_backup.py"
+
+
+@pytest.fixture
+def fetch_mod(mod):
+    sys.modules["warilink_backup"] = mod  # 同じ(DB を差し替えた)モジュールを使わせる
+    spec = importlib.util.spec_from_file_location("warilink_fetch_under_test", FETCH)
+    assert spec and spec.loader
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    yield m
+    sys.modules.pop("warilink_backup", None)
+
+
+def test_fetch_script_verifies_an_isolated_copy_and_refuses_unsafe_requests(mod, fetch_mod, tmp_path, capsys):
+    s3, kms = FakeS3(), FakeKmsProvider()
+    _, rc = _make(mod, tmp_path, kms, storage=S3Storage(s3, S3_LOC))
+    off = _last_json(capsys)["offsite"]
+    args = ["--from", "s3://unused/x", "--backup", off["prefix"], "--receipt-version", off["receipt"]["version_id"],
+            "--receipt-sha256", off["receipt"]["sha256"]]
+    st = S3Storage(s3, S3_LOC)
+    out = tmp_path / "fetched"
+    assert fetch_mod.main([*args, "--out", str(out)], storage=st, provider=kms) == 0
+    report = _last_json(capsys)
+    assert report["verified"] is True and report["files"] == 5 and FAKE_BUCKET not in json.dumps(report)
+    assert sorted(p.name for p in out.iterdir()) == ["db.dump.enc", "manifest.enc", "manifest.json", "receipts"]
+    assert fetch_mod.main([*args, "--out", str(out)], storage=st, provider=kms) == 3  # 取得先が空でない
+    assert fetch_mod.main([*args[:4], "--out", str(tmp_path / "x")], storage=st, provider=kms) == 3  # 世代なし
+    assert fetch_mod.main(["--from", "s3://bucket", "--backup", "p", "--receipt-version", "v", "--out",
+                           str(tmp_path / "y")]) == 3  # 接頭辞の無い設定・接続の許可なし
+    s3.tamper_get.add(f"backups/prod/{off['prefix']}/receipts/a.jpg.enc")
+    assert fetch_mod.main([*args, "--out", str(tmp_path / "z")], storage=st, provider=kms) == 1
+    assert _last_json(capsys)["verified"] is False
+    assert mod.created == []  # 取得と検証では DB に触れない
