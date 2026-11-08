@@ -7,7 +7,7 @@
 判定は PASS / FAIL / BLOCKED / UNEXECUTED のどれか。**未実施を PASS にしない**。証拠が手元の実行だけのものは「ローカル」と書く。
 ここにある PASS は、開発環境でのテストの結果です。本番で動いていることを示すものではありません。
 
-**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-06、ブランチ `feat/warilink-step02-s3-kms-20261104`)
+**現在の判定: `FREE_RELEASE=NO_GO`**(2026-11-08、ブランチ `feat/warilink-step03-production-infra-20261104`)
 
 | ゲート | 判定 | 証拠・残っていること |
 |---|---|---|
@@ -15,7 +15,8 @@
 | main の CI | PASS(main `ca186dd`、2026-11-03) | https://github.com/rai0409/warilink/actions/runs/41602748349(api / web / e2e が成功。#17 のマージ後) |
 | CSRF・Origin・回数制限 | PASS(ローカル、2026-11-03、コミット 1458a13 で API テスト 374 件が成功、使い捨て DB) | `apps/api/tests/api/test_flow.py`(CSRF・Origin)、`apps/api/tests/api/test_rate_limits.py` |
 | 端末での手動確認(iPhone・Android・読み上げ) | UNEXECUTED | `docs/QA_DEVICE_CHECKLIST.md`(`DEVICE_MANUAL_QA=UNEXECUTED`) |
-| 本番の HTTPS・送信元 IP・専用 DB・DB の権限 | BLOCKED | 設定の検査はある(`apps/api/tests/test_production_config.py`、`apps/api/tests/test_deploy_config.py`)。導入先・逆プロキシ・DB の権限が未決定で、本番相当の確認はしていない |
+| 本番の構成ファイル・送信元 IP の受け渡し・DB のロール分離・マイグレーションの分離・起動前検査(コード) | PASS(ローカル、2026-11-08、STEP 03。一時コンテナで Caddy・Next.js の実物と使い捨ての PostgreSQL を使った検証) | `docs/TEST_AND_DELIVERY.md`「STEP 03」、`infra/ops/production-runbook.md`。実際の VM・DNS・証明書での確認ではない(次の行) |
+| 本番の HTTPS・送信元 IP・専用 DB・DB の権限 | BLOCKED | 構成・ロール・起動前検査はある(上の行)。VM・DNS・証明書が未契約で、実稼働での確認(`scripts/warilink_preflight.py --check-db` が本番で PASS すること)はしていない |
 | 保存期限の自動削除ジョブ | BLOCKED | `RETENTION_RUNTIME=BLOCKED`。導入先でジョブが未登録。画面はジョブの実績が無い間は自動削除を約束しない |
 | 暗号化バックアップと削除の再適用 | PASS(ローカル、2026-10-31、PR C #14) | `ENCRYPTED_BACKUP_TEST=PASS`、`RESTORE_DRILL=PASS`(隔離した一時コンテナ)。記録は `docs/TEST_AND_DELIVERY.md`「PR C」 |
 | 削除の記録(DB の外の削除ジャーナル・削除の前後の記録・復元時の検査) | PASS(ローカル、2026-11-04、STEP 01、使い捨て DB で API テスト 416 件・隔離した一時コンテナで復元訓練) | `docs/TEST_AND_DELIVERY.md`「STEP 01」。ローカルディレクトリの実装だけで、外部保管ではない(次の行)。このブランチの CI は未実行(push していない) |
@@ -24,7 +25,7 @@
 | 通知・監視 | BLOCKED | `MONITOR_ALERT_LIVE=BLOCKED`(通知先が未選定) |
 | 利用規約・プライバシーポリシー・問い合わせ先 | BLOCKED | 画面は「準備中」。下書きは `docs/legal/`、決める項目は `docs/legal/README.md` の `OWNER_APPROVAL_REQUIRED` |
 | LICENSE(商用で使う権利) | BLOCKED | リポジトリは独自の非商用ライセンス。権利者の判断が必要 |
-| ロールバック計画(リリースの戻し方・DB の移行の戻し方) | BLOCKED | 文書がない。導入先が決まってから作る |
+| ロールバック計画(リリースの戻し方・DB の移行の戻し方) | BLOCKED | 手順の文書はある(`infra/ops/production-runbook.md`「戻し方」、STEP 03)。本番の DB の切り替えは VM・保管先が決まってから実地で作り、訓練していない |
 | 画面の提供範囲の表示(止めている機能を使えるように見せない、送金しないこと、入金を保証しないこと、ゲストの記録を失う場合があること) | PASS(ローカル、2026-11-03、E2E の実行コミットは `docs/TEST_AND_DELIVERY.md` の P05 節に記録) | `apps/web/e2e/policy.spec.ts`、ホーム・料金プラン画面 |
 
 ## OCR を有効にする場合だけのゲート(無料版では対象外)

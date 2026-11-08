@@ -1,0 +1,157 @@
+# WariLink の本番構成(STEP 03)。単一の Linux VM で Caddy + Next.js + FastAPI + PostgreSQL を動かす。
+# 開発用の infra/compose.yaml とは別のプロジェクト名・ボリューム・ネットワークを使い、互いに影響しない。
+#
+#   docker compose -f infra/compose.production.yaml --env-file /etc/warilink/production.env config   # 構成の確認
+#   docker compose -f infra/compose.production.yaml --env-file /etc/warilink/production.env run --rm migrate
+#   docker compose -f infra/compose.production.yaml --env-file /etc/warilink/production.env up -d
+#
+# - 外へ公開するのは proxy の 80/443 だけ。web・api・db は内部ネットワーク(internal: true)にだけ置く。
+# - 必須の値(${…:?})が無ければ compose が起動を拒否する。秘密は env ファイル(リポジトリに置かない)で渡す。
+# - DB のマイグレーションは API の起動に含めない。導入・更新のときに migrate を 1 回だけ実行する
+#   (infra/ops/production-runbook.md)。API は起動の前にスキーマが最新であることを確かめ、違えば起動しない。
+# - 無料版の対象外の機能(Passkey・振込先・OCR・広告・課金・銀行連携)は false に固定する(OCR のワーカーは置かない)。
+name: warilink-prod
+
+x-api-env: &api-env
+  WARILINK_ENVIRONMENT: production
+  WARILINK_COOKIE_SECURE: "true"
+  WARILINK_ALLOWED_ORIGINS: '["https://${WARILINK_DOMAIN:?WARILINK_DOMAIN を設定してください}"]'
+  # API へ中継してよいのは Web(web_api ネットワークの固定アドレス)だけ。X-Forwarded-For はそこからの接続のときだけ使う
+  WARILINK_TRUSTED_PROXIES: '["172.30.2.2/32"]'
+  WARILINK_RATE_LIMIT_SECRET: ${WARILINK_RATE_LIMIT_SECRET:?WARILINK_RATE_LIMIT_SECRET を設定してください}
+  WARILINK_DELETION_JOURNAL: ${WARILINK_DELETION_JOURNAL:?WARILINK_DELETION_JOURNAL を設定してください}
+  WARILINK_AWS_LIVE: ${WARILINK_AWS_LIVE:-}
+  AWS_REGION: ${AWS_REGION:-}
+  WARILINK_FEATURE_PASSKEYS: "false"
+  WARILINK_FEATURE_PAYMENT_DESTINATIONS: "false"
+  WARILINK_FEATURE_OCR: "false"
+  WARILINK_FEATURE_ADS: "false"
+  WARILINK_FEATURE_BILLING: "false"
+  WARILINK_FEATURE_BANK_PROVIDER: "false"
+  WARILINK_RECEIPT_STORAGE_DIR: /data/receipts
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  proxy:
+    image: caddy:2.10-alpine
+    <<: *hardening
+    cap_add:
+      - NET_BIND_SERVICE
+    environment:
+      WARILINK_DOMAIN: ${WARILINK_DOMAIN:?WARILINK_DOMAIN を設定してください}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - public
+      - proxy_web
+    depends_on:
+      - web
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_ORIGIN: http://api:8000
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache
+    networks:
+      proxy_web: {}
+      web_api:
+        ipv4_address: 172.30.2.2
+    depends_on:
+      - api
+
+  api:
+    build: ../apps/api
+    <<: *hardening
+    read_only: true
+    tmpfs:
+      - /tmp
+    # スキーマが最新(alembic の head)でなければ起動しない。マイグレーションはしない(権限も無い)。
+    # --no-proxy-headers / --no-access-log は開発・E2E と同じ(tests/test_deploy_config.py)。
+    # --timeout-keep-alive 65: Next.js の中継の keep-alive(5 秒)より長くし、閉じかけの接続の再利用を防ぐ
+    command: ["sh", "-c", "alembic current 2>/dev/null | grep -q '(head)' || { echo 'スキーマが最新ではありません。migrate を実行してください' >&2; exit 3; }; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 65 --no-proxy-headers --no-access-log"]
+    environment:
+      <<: *api-env
+      WARILINK_DATABASE_URL: ${WARILINK_APP_DATABASE_URL:?WARILINK_APP_DATABASE_URL(warilink_app の接続先)を設定してください}
+    volumes:
+      - receipts:/data/receipts
+    networks:
+      - web_api
+      - api_db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 導入・更新のときだけ 1 回実行する(`run --rm migrate`)。通常の `up` では起動しない
+  migrate:
+    profiles: ["migrate"]
+    build: ../apps/api
+    <<: *hardening
+    restart: "no"
+    command: ["sh", "-c", "alembic upgrade head && python -c \"import os, sqlalchemy as s; e = s.create_engine(os.environ['WARILINK_DATABASE_URL']); c = e.connect(); c.execute(s.text('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON alembic_version FROM warilink_app')); c.commit()\""]
+    environment:
+      <<: *api-env
+      WARILINK_DATABASE_URL: ${WARILINK_MIGRATOR_DATABASE_URL:-}
+    networks:
+      - api_db
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      # ブートストラップの管理者(導入時のロール作成だけに使う。アプリ・ジョブは使わない)
+      POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:?POSTGRES_BOOTSTRAP_USER を設定してください}
+      POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?POSTGRES_BOOTSTRAP_PASSWORD を設定してください}
+      POSTGRES_DB: postgres
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./ops/postgres-roles.sql:/ops/postgres-roles.sql:ro
+    networks:
+      - api_db
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+networks:
+  public: {}
+  proxy_web:
+    internal: true
+  web_api:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.2.0/28
+  api_db:
+    internal: true
+
+volumes:
+  pgdata:
+  receipts:
+  caddy_data:
+  caddy_config:

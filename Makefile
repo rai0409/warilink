@@ -3,7 +3,7 @@ PY := $(VENV)/bin
 COMPOSE := docker compose -f infra/compose.yaml
 DEV_DB := postgresql+psycopg://warilink:warilink-dev-only@localhost:55432/warilink
 
-.PHONY: setup up up-ocr down db migrate api web worker test test-ocr test-stress lint e2e contracts
+.PHONY: setup up up-ocr down db migrate api web worker test test-ocr test-stress lint e2e contracts preflight-production
 
 setup:
 	test -d $(VENV) || python3 -m venv $(VENV)
@@ -54,3 +54,8 @@ e2e:
 
 contracts:
 	pnpm gen:contracts
+
+# 本番の起動前検査(STEP 03)。読み取りだけで、何も変更・接続しない(--check-db を付けたときだけ DB を読む)。
+# 例: make preflight-production ENV_FILE=/etc/warilink/production.env
+preflight-production:
+	$(PY)/python scripts/warilink_preflight.py $(if $(ENV_FILE),--env-file $(ENV_FILE),)

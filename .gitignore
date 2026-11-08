@@ -1,6 +1,9 @@
 .env
 .env.*
+*.env
 !.env.example
+# 実行の記録(機密なし。コミットに SHA を書くため追跡しない)
+/artifacts/
 .venv/
 __pycache__/
 *.pyc

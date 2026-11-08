@@ -138,9 +138,15 @@ def rate_limit_problems(s: "Settings") -> list[str]:
         out.append("WARILINK_TRUSTED_PROXIES に API を中継するサーバー(Web)の IP / CIDR を指定してください")
     for n in s.trusted_proxies:
         try:
-            ipaddress.ip_network(n, strict=False)
+            net = ipaddress.ip_network(n, strict=False)
         except ValueError:
             out.append("WARILINK_TRUSTED_PROXIES は IP アドレスか CIDR の一覧にしてください")
+            break
+        # 中継は内部のネットワークだけ(STEP 03)。広すぎる範囲・公開アドレスを信頼すると、誰でも
+        # X-Forwarded-For で送信元を偽れる(回数制限をすり抜けられる)
+        if not (net.is_private or net.is_loopback) or net.prefixlen < (16 if net.version == 4 else 48):
+            out.append("WARILINK_TRUSTED_PROXIES は Web の中継の内部アドレスだけにしてください"
+                       "(公開アドレス・広すぎる範囲は不可)")
             break
     lo_l, hi_l = RATE_LIMIT_BOUNDS["limit"]
     lo_w, hi_w = RATE_LIMIT_BOUNDS["window"]
