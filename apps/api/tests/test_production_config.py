@@ -15,7 +15,7 @@ SAFE = {
     "allowed_origins": ["https://warilink.example"],
     "database_url": "postgresql+psycopg://app:s3cret-from-env@db.internal:5432/warilink",
     "rate_limit_secret": "r" * 32,
-    "trusted_proxies": ["10.0.0.0/8"],
+    "trusted_proxies": ["172.30.2.2/32"],
     "deletion_journal": "local:/srv/warilink-journal",
 }
 
@@ -91,6 +91,10 @@ def test_optional_features_are_available_when_enabled(monkeypatch, name):
         ({"rate_limit_secret": "short"}, "RATE_LIMIT_SECRET"),
         ({"trusted_proxies": []}, "TRUSTED_PROXIES"),
         ({"trusted_proxies": ["not-an-ip"]}, "TRUSTED_PROXIES"),
+        ({"trusted_proxies": ["0.0.0.0/0"]}, "TRUSTED_PROXIES"),  # STEP 03: 全員を中継として信頼しない
+        ({"trusted_proxies": ["10.0.0.0/8"]}, "TRUSTED_PROXIES"),  # 広すぎる
+        ({"trusted_proxies": ["8.8.8.8/32"]}, "TRUSTED_PROXIES"),  # 公開アドレス
+        ({"trusted_proxies": ["::/0"]}, "TRUSTED_PROXIES"),
         ({"rate_limits_enabled": False}, "回数制限を無効"),
         ({"rate_limit_overrides": {"guest_create:ip": (0, 3600)}}, "guest_create:ip"),
         ({"rate_limit_overrides": {"guest_create:ip": (20, 5)}}, "guest_create:ip"),

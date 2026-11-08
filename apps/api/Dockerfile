@@ -10,5 +10,7 @@ USER app
 EXPOSE 8000
 # --no-proxy-headers: X-Forwarded-For は アプリの WARILINK_TRUSTED_PROXIES だけで扱う(送信元 IP の偽装で回数制限を
 #   すり抜けられないように)。--no-access-log: URL(招待トークンなど)をアクセスログに残さない。
-# infra/compose.yaml・apps/web/playwright.config.ts と同じ(tests/test_deploy_config.py で一致を確認)
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-proxy-headers --no-access-log"]
+# マイグレーションは起動に含めない(STEP 03)。本番は compose.production.yaml の migrate を 1 回だけ実行し、
+# アプリのロール(warilink_app)には DDL の権限を与えない。開発の infra/compose.yaml と E2E は自分のコマンドで
+# マイグレーションしてから起動する(tests/test_deploy_config.py で各環境を確認)。
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-keep-alive", "65", "--no-proxy-headers", "--no-access-log"]

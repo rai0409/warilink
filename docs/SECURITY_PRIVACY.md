@@ -56,7 +56,7 @@
 | `WARILINK_FEATURE_BANK_PROVIDER=true` | 契約・同意・法務確認前 |
 | `WARILINK_FEATURE_ADS=true` / `WARILINK_FEATURE_BILLING=true` | 未実装 |
 | `WARILINK_ENVIRONMENT` が development/test/production 以外 | 綴り違いで開発設定のまま動くのを防ぐ |
-| `WARILINK_RATE_LIMITS_ENABLED=false`、`WARILINK_RATE_LIMIT_SECRET` が未設定・32 文字未満、`WARILINK_TRUSTED_PROXIES` が未設定・不正、`WARILINK_RATE_LIMIT_OVERRIDES` が範囲外(回数 1〜10,000・期間 10〜86,400 秒)・不明な名前(STEP3) | 濫用対策の回数制限が無効・回避可能・誤設定になるのを防ぐ |
+| `WARILINK_RATE_LIMITS_ENABLED=false`、`WARILINK_RATE_LIMIT_SECRET` が未設定・32 文字未満、`WARILINK_TRUSTED_PROXIES` が未設定・不正・公開アドレス・広すぎる範囲(STEP 03)、`WARILINK_RATE_LIMIT_OVERRIDES` が範囲外(回数 1〜10,000・期間 10〜86,400 秒)・不明な名前(STEP3) | 濫用対策の回数制限が無効・回避可能・誤設定になるのを防ぐ |
 
 - V0 production の機能設定例は、次を明示する。ゲスト利用・グループ・手入力支出・明細割り勘・精算案・手動確認は既定で有効である。
 
@@ -151,6 +151,13 @@
   信頼しないアドレスを使う。**Next.js は `X-Forwarded-For` が既にあれば書き換えず、自分の接続元も追記しない**ため、本番では Next の前に
   利用者の IP を末尾に追記する TLS 終端の逆プロキシを置き、`WARILINK_TRUSTED_PROXIES` に Web(Next)のアドレスを入れる。Next を直接公開すると
   このヘッダーは利用者が自由に書ける。
+- 本番構成(STEP 03、2026-11-08、`infra/compose.production.yaml`・`infra/proxy/Caddyfile`): Caddy が `X-Forwarded-For` を接続元で
+  **上書き**し(`X-Real-IP`・`Forwarded` も捨てる)、Next は内部ネットワークにだけ置く。`WARILINK_TRUSTED_PROXIES` は Web の固定アドレス
+  `172.30.2.2/32` だけ。本番の起動の検査は、公開アドレス・広すぎる範囲(IPv4 で /16 より広い、IPv6 で /48 より広い)を拒否する。
+  Next.js 16.4.2 の実物と Caddy 2.10 の一時コンテナで、偽のヘッダーが捨てられ利用者の IP だけが届くことを確認した(`docs/TEST_AND_DELIVERY.md`)。
+- DB のロール(STEP 03、`infra/ops/postgres-roles.sql`): ブートストラップの管理者・`warilink_migrator`(DDL)・`warilink_app`(DML だけ)・
+  `warilink_backup`(読み取りだけ)に分ける。アプリのロールはユーザー名ではなく `pg_roles` の属性と `has_*_privilege` で起動前検査が確かめる
+  (`scripts/warilink_preflight.py --check-db`)。本番の API は起動時にマイグレーションしない(権限も無い)。
 - API は本番イメージ・compose・E2E のどれも `uvicorn --no-proxy-headers --no-access-log` で起動する(`apps/api/tests/test_deploy_config.py`
   で一致を検査)。**これで保証できるのは API プロセス自身の扱いだけ**: 前段の逆プロキシ・ロードバランサー・Next.js のアクセスログには、
   招待トークンを含む URL や接続元 IP が残りうる。導入先でそれらのログの保存期間・閲覧権限・URL のマスクを設定し、
@@ -223,7 +230,7 @@
 | 秘密 | DB の既定パスワード、回数制限の秘密(32 文字以上)、振込先の鍵(開発用の固定鍵・不正な鍵を拒否) | 秘密は環境変数・シークレットストアで渡す。KMS は**未導入**(鍵の入れ替えは `payment_destinations.cli rotate`) |
 | DB 権限 | スーパーユーザー(`postgres`)での接続を拒否 | アプリ専用ユーザーに必要な表の権限だけを与える(マイグレーションは別ユーザーでもよい) |
 | 有効期間・保持期間 | セッション 1〜365 日、step-up 60〜3600 秒、challenge 60〜600 秒、各保持期間の範囲、削除済み一覧はバックアップ(30 日)以上 | — |
-| 接続元・回数制限 | 回数制限の無効化・`TRUSTED_PROXIES` 未設定・範囲外の上限を拒否 | 逆プロキシが利用者の IP を `X-Forwarded-For` の末尾に追記すること。uvicorn は `--no-proxy-headers` |
+| 接続元・回数制限 | 回数制限の無効化・`TRUSTED_PROXIES` 未設定・公開アドレス/広すぎる範囲・範囲外の上限を拒否 | 逆プロキシが利用者の IP を `X-Forwarded-For` の末尾に追記すること。uvicorn は `--no-proxy-headers` |
 | ログ | — | uvicorn は `--no-access-log`(URL の招待トークンを残さない)。アプリのログに IP・口座・トークンを出さない(コード上なし) |
 | 依存の固定 | CI は `uv sync --frozen`・`pnpm install --frozen-lockfile` | コンテナのベースイメージ(`python:3.13-slim`・`node:22-alpine`)はタグ指定のみで digest 固定は未実施 |
 | バックアップ・復元 | 本番では平文のバックアップと、外部保管の無いバックアップ(終了コード 4)を不可。外部から読み戻して検証できないバックアップも成功にしない(STEP 02)。復元は削除済み一覧が必須。削除ジャーナルが無ければバックアップを拒否し、復元はジャーナルの完全性・チェックポイント・未確定の無いことを DB を作る前に確かめる | 暗号化は実装済み(鍵は環境変数。KMS は未接続)。外部保管の接続・アクセス権・鍵との分離は保管先が決まるまで**未実施** |

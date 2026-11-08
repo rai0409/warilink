@@ -493,3 +493,54 @@ boto3 を読み込んでいないことも確かめる。
   `FREE_RELEASE=NO_GO`。
 - 範囲外の変更: STEP 01 の `tests/test_production_config.py` の 1 件(「`s3://bucket/journal` を拒否」→「接頭辞の無い
   `s3://bucket` を拒否」)。S3 の削除ジャーナルを受け付ける新しい契約と両立しないため、利用者の承認を得て変更した。
+
+## STEP 03: 本番の構成・HTTPS の入口・DB のロール分離(2026-11-08、未デプロイ)
+
+構成は `infra/compose.production.yaml`・`infra/proxy/Caddyfile`・`infra/ops/postgres-roles.sql`、手順は `infra/ops/production-runbook.md`、
+起動前検査は `scripts/warilink_preflight.py`。VM・DNS・証明書は未契約で、何もデプロイしていない。
+
+| 確かめたこと | どうやって |
+|---|---|
+| 外へ出るのは proxy の 80/443 だけ、web・api・db は内部ネットワーク、DB・API をホストへ公開しない、必須の値が無ければ compose が拒否、対象外の機能は false に固定、非 root・権限の削除・読み取り専用 | `tests/ops/test_production_infra.py`、`docker compose config`(Docker の構成の解析だけ。既存のコンテナに触れない) |
+| マイグレーションの分離: イメージの既定の起動はマイグレーションしない、本番の API は最新でなければ起動しない、migrate は `run --rm` で 1 回だけ、開発と E2E は従来どおり | `tests/test_deploy_config.py`(古い固定の検査を、環境ごとの新しい契約に置き換えて強化) |
+| 信頼する中継: Web の固定アドレスだけ。本番の起動の検査が公開アドレス・広すぎる範囲を拒否 | `tests/test_production_config.py`・`tests/ops/test_production_infra.py` |
+| 起動前検査: env ファイルが無ければ BLOCKED(PASS にしない)、危険な値は FAIL、秘密を出力しない、構成・Caddyfile の弱体化を検出、権限 600 | `tests/ops/test_production_infra.py` |
+
+実物での検証(すべて一時コンテナ・一時プロセスで行い、終了後に削除。既存のコンテナ・DB には触れていない):
+
+- **送信元 IP**(Next.js 16.4.2 の standalone と Caddy 2.10):
+  - Next.js の中継は、届いた `X-Forwarded-For` をそのまま渡し、無ければ何も足さない。そのため Next を直接公開してはいけない。
+  - 本番の Caddyfile(サイトのアドレスと中継先だけ置き換え)を前に置くと、偽の `X-Forwarded-For`(1 つ・複数)・`X-Real-IP`・
+    `Forwarded` はすべて捨てられ、API 側には Caddy が見た接続元だけが届いた。
+  - Origin・CSRF のヘッダー・Cookie は変わらずに届き、`Set-Cookie`(HttpOnly・Secure・SameSite=Lax)はそのまま返った。
+  - セキュリティのヘッダーは付いた。`Server` は消えた。アクセスログは出なかった。
+  - 本番の Caddyfile は `caddy validate` を通った。`WARILINK_DOMAIN` が空なら Caddy は起動を拒否する。
+- **DB のロール**(使い捨ての PostgreSQL 18、`WARILINK_ROLE_TEST_CONTAINER` を指定したときだけ動くテスト):
+  - ロールを作った後、アプリのロールではマイグレーションできず、migrator ではできた。
+  - 起動前検査の `--check-db` は、属性・権限・スキーマの版がすべて PASS。
+  - アプリのロールでは CREATE / DROP / ALTER / TRUNCATE / `alembic_version` の書き換え / スキーマの作成が拒否された。
+  - API はアプリのロールで動いた(ゲスト・グループ・支出の作成)。スーパーユーザーで接続する設定は FAIL になった。
+- **API のイメージ**(本番と同じ読み取り専用・権限の削除・本番の設定):
+  - マイグレーションの前は終了コード 3 で起動しなかった。アプリのロールでの migrate は `permission denied` で失敗した。
+  - compose の migrate のコマンドは migrator で成功し、その後 API は uid 10001 で起動し `/health` が 200 を返した。
+  - アクセスログは 0 行。アプリのロールは `alembic_version` を読むだけ。
+- **見つけて直した不具合**: 起動前検査の DB の権限の確認で、結果の列に `t` という名前を付けていた。SQLAlchemy 2.0 の Row の
+  属性 `.t`(行全体)と衝突して常に「TRUNCATE の権限あり」と誤判定していた。偽物のテストでは見つからず、実 DB のテストで見つかった。
+- **わざと保証を外した 9 通りの変更**は、どれもテストが失敗することを確かめた:
+  - API のポートを公開する
+  - Caddy が利用者の `X-Forwarded-For` を残す
+  - イメージが起動時にマイグレーションする
+  - 中継の範囲の確認を外す
+  - 起動前検査が接続先を出力する
+  - API がスキーマの版を確かめない
+  - Web のネットワーク全体を信頼する
+  - OCR を env で有効にできる
+  - ロールの SQL がアプリにスキーマの作成を許す
+- **実行記録**(2026-11-08、base main `ca0575e`、ローカル macOS arm64・Python 3.13、使い捨て DB `warilink_test_ui`):
+  API の pytest 485 件成功・1 件スキップ(実 DB のロールのテスト。上の一時コンテナで別に実行して成功)。
+  Ruff・mypy 成功、OpenAPI はコミット済みと一致。
+- **判定**:
+  - `STEP03_CODE` はこのブランチの CI 結果で判定する。
+  - 本番の HTTPS・送信元 IP・専用 DB・DB の権限は **BLOCKED**(VM・DNS・証明書が未契約で、本番で起動前検査を実行していない)。
+  - ロールバックは手順の文書だけで、訓練していない。
+  - `FREE_RELEASE=NO_GO`。

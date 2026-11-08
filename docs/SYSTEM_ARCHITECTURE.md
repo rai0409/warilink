@@ -160,3 +160,15 @@ class BankDataProvider(Protocol):
   信じて接続元を書き換えるため、回数制限の判定をアプリ側の `WARILINK_TRUSTED_PROXIES` だけに任せる。アクセスログには招待トークンを含む
   URL が残るため出さない(`infra/compose.yaml`、`apps/web/playwright.config.ts`、`apps/api/Dockerfile`。一致は
   `apps/api/tests/test_deploy_config.py` で検査)。前段の逆プロキシ・Next.js のログは別途、導入先で扱う(`docs/SECURITY_PRIVACY.md` §2.3.1)。
+
+
+## 本番構成(STEP 03、2026-11-08。未デプロイ)
+
+- 単一の Linux VM: `infra/compose.production.yaml`(プロジェクト名 `warilink-prod`。開発の `infra/compose.yaml` とは別)。
+  proxy(Caddy、80/443 だけ公開、HTTPS を終端)→ web(Next.js、ブラウザから見える唯一のアプリ。`/api/v1/*` を API へ中継)→
+  api(FastAPI)→ db(PostgreSQL)。web・api・db は内部ネットワークにだけ置き、ホストへ公開しない。
+- マイグレーションは API の起動に含めない。導入・更新のときに `--profile migrate run --rm migrate` を 1 回だけ実行し
+  (`warilink_migrator` のロール)、API(`warilink_app`、DDL の権限なし)は起動の前にスキーマが最新であることだけを確かめる。
+  `apps/api/Dockerfile` の既定の起動もマイグレーションしない。開発の compose と E2E は使い捨ての DB なので従来どおり。
+- 起動前検査: `scripts/warilink_preflight.py`(`make preflight-production`)。手順・障害・戻し方・秘密の入れ替えは
+  `infra/ops/production-runbook.md`。VM・DNS・証明書は未契約で、実稼働の検証は BLOCKED。

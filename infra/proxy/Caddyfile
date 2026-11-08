@@ -1,0 +1,38 @@
+# WariLink の本番の入口(STEP 03)。HTTPS を終端し、Web(Next.js)へだけ中継する。API・DB はここから見えない。
+#
+# - 公開するのは 443(と、HTTPS へ転送するだけの 80)。証明書は Caddy が自動で取得・更新する(導入先の DNS が必要)。
+# - X-Forwarded-For は**接続してきた相手の IP で上書き**する(利用者が送った偽の値を捨てる)。Caddy はインターネットに
+#   直接面しているため、手前に信頼する中継は無い(trusted_proxies を設定しない)。
+#   Next.js(16)の中継はこの値をそのまま API へ渡し、API は WARILINK_TRUSTED_PROXIES(Web のネットワーク)からの
+#   接続のときだけこの値を使う(apps/api/app/core/security.py の client_ip)。
+# - アクセスログは出さない(log ディレクティブを置かない)。URL の招待トークンを残さないため。
+# - WARILINK_DOMAIN が未設定なら compose.production.yaml が起動を拒否する。
+
+{
+	admin off
+}
+
+{$WARILINK_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		# 招待のリンク(/join/<token>)を、遷移先へ Referer で渡さない
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+		-X-Powered-By
+	}
+
+	request_body {
+		max_size 12MB
+	}
+
+	reverse_proxy web:3000 {
+		header_up X-Forwarded-For {remote_host}
+		header_up -X-Real-IP
+		header_up -Forwarded
+	}
+}
