@@ -60,7 +60,9 @@
 | 設定 | 内容 | 状態 |
 |---|---|---|
 | `WARILINK_BACKUP_KEYS` / `WARILINK_BACKUP_ACTIVE_KEY` | バックアップの KEK(32 バイトの乱数を base64)。シークレットストアで管理し、バックアップの保管先に置かない。入れ替えたら古い鍵 ID は 30 日(保持期間)残す | 未設定(KMS へ移す: `KMS_LIVE=BLOCKED`) |
-| `WARILINK_BACKUP_OFFSITE` | 外部の保管先。書き込み専用の資格情報・バージョン管理またはオブジェクトロック(30 日)・保管先の暗号化・復元用の読み取り権限を別担当にする | 未選定(`OFFSITE_STORAGE_LIVE=BLOCKED`) |
+| `WARILINK_BACKUP_OFFSITE` | 外部の保管先(`local:ディレクトリ` / `s3://バケット/接頭辞`、STEP 02)。書き込み専用の資格情報・バージョン管理とオブジェクトロック(30 日)・保管先の暗号化・復元用の読み取り権限を別担当にする | コードは実装済み・実 AWS は未接続(`OFFSITE_STORAGE_LIVE=BLOCKED`) |
+| `WARILINK_BACKUP_KMS_KEY_ID` | バックアップの鍵を AWS KMS にする(エイリアス・鍵 ID・ARN。manifest には ARN を書く) | コードは実装済み・実 AWS は未接続(`KMS_LIVE=BLOCKED`) |
+| `WARILINK_AWS_LIVE` | `1` のときだけ AWS に接続する(資格情報が環境にあっても、これが無ければ接続しない) | 未設定 |
 | `WARILINK_TOMBSTONE_FILE` | 削除済み一覧(DB の外)。バックアップとは別の保管先にも複製し、30 日以上残す | 未設定 |
 | `WARILINK_ALERT_CMD` | 通知コマンド(標準入力で要約を受け取る) | 未設定(`MONITOR_ALERT_LIVE=BLOCKED`) |
 | `WARILINK_MONITOR_API_URL` | 外形監視する API の URL(`/api/v1/health`) | 未設定 |
@@ -99,3 +101,48 @@ RPO 24 時間・RTO 4 時間は目標。本番の量・保管先からの取り�
 ローカルだけの開発用バックアップの成功は、外部保管を含むバックアップの成功記録にはしない。本番の成功記録はダンプと画像の完全性確認、外部へのアップロードとハッシュ照合がすべて成功し、状態を DB に記録できた場合だけ更新する。状態の記録に失敗した場合は成功を返さない。終了コードは 0 (成功)、1 (画像不足)、3 (拒否・状態記録失敗)、4 (本番の外部保管未設定または外部保管失敗)。
 
 外部で独立管理される削除済み一覧の最新性は現在の基盤では確認できず、バックアップ後のすべての削除の復元時再適用は保証できない。本番復元は BLOCKED。ライブ KMS、実際の外部保管、本番復元は未検証。
+
+## S3・KMS の外部保管(STEP 02、2026-11-06。実 AWS は未接続)
+
+コード(`apps/api/app/ops/s3_storage.py`・`aws_kms.py`・`scripts/warilink_fetch_backup.py`)とオフラインのテストまで。
+実際のバケット・鍵・IAM は**作っていない・設定していない**。以下は導入先で運用者が行う手順で、承認・予算・検証用の
+資格情報がそろうまで `OFFSITE_STORAGE_LIVE` / `KMS_LIVE` は BLOCKED。
+
+### 準備(運用者)
+1. `cd apps/api && uv sync --group aws`(boto3。API のコンテナ・CI には入れない)。
+2. バケット(バックアップ用と削除ジャーナル用は分けてよい。接頭辞は必須):
+   - バージョン管理: 有効。Object Lock: 有効、既定の保持は COMPLIANCE(または GOVERNANCE)30 日以上。
+   - 既定の暗号化: SSE-KMS。パブリックアクセスはすべてブロック。
+   - 本番の `backup` は `check_bucket()` でこの 3 点を確かめ、満たさなければ拒否する(設定はコードで変えない)。
+   - 30 日を過ぎたバックアップの削除は、ライフサイクル規則(非現行の世代を含む)で行う。`prune` はローカル専用。
+3. KMS の鍵: 対称暗号(SYMMETRIC_DEFAULT、ENCRYPT_DECRYPT)、自動ローテーションを有効にする。エイリアスを
+   `WARILINK_BACKUP_KMS_KEY_ID` に設定。鍵を入れ替えたら、古い鍵は 30 日(保持期間)を過ぎるまで無効にしない
+   (manifest の ARN で開くため)。
+4. IAM(最小の範囲。ロール・ポリシーは導入先で作る。このリポジトリは何も適用しない):
+
+| 実行する役割 | S3 | KMS |
+|---|---|---|
+| バックアップ(日次) | 対象の接頭辞への `s3:PutObject`・`s3:GetObject`・`s3:GetObjectVersion`(読み戻しの検証)、バケットの `s3:GetBucketVersioning`・`s3:GetBucketObjectLockConfiguration`・`s3:GetEncryptionConfiguration`。`s3:DeleteObject*`・`s3:PutBucket*`・`s3:BypassGovernanceRetention` は**与えない** | 対象の鍵への `kms:Encrypt`・`kms:Decrypt`(読み戻しの検証)・`kms:DescribeKey`。暗号化コンテキストの条件 `kms:EncryptionContext:purpose = warilink-backup-dek` を付ける |
+| 削除ジャーナル(API・定期ジョブ) | ジャーナルの接頭辞への `s3:PutObject`・`s3:GetObject`・`s3:GetObjectVersion`・`s3:ListBucketVersions`(接頭辞の条件付き)。削除・上書き禁止の解除は与えない | なし(SSE-KMS のバケットなら、その鍵の `kms:GenerateDataKey`・`kms:Decrypt` を S3 経由に限って) |
+| 取得・復元の検証(別担当) | `s3:GetObject`・`s3:GetObjectVersion`・`s3:ListBucketVersions` だけ | `kms:Decrypt` だけ(同じ暗号化コンテキストの条件) |
+
+### 日次のバックアップ(S3)
+- `WARILINK_AWS_LIVE=1 WARILINK_BACKUP_OFFSITE=s3://… WARILINK_BACKUP_KMS_KEY_ID=alias/… scripts/warilink_backup.py backup …`
+- 置いた後に受領記録(`upload-receipt.json`: 各ファイルの世代と SHA-256)を置き、その世代を S3 から読み戻して
+  SHA-256・暗号の認証・ファイルの一覧・削除ジャーナルのチェックポイントを確かめる。確かめられなければ終了コード 4 で、
+  `maintenance_runs` に成功を記録しない。
+- 出力の `offsite.prefix` と `offsite.receipt`(受領記録の世代と SHA-256)を運用記録に残す(取得に使う)。
+
+### 取得と検証(復元の前に、別担当が行う)
+1. `WARILINK_AWS_LIVE=1 scripts/warilink_fetch_backup.py --from s3://… --backup <offsite.prefix>
+   --receipt-version <offsite.receipt.version_id> --receipt-sha256 <offsite.receipt.sha256> --out 空のディレクトリ`
+   (終了コード 0 = 検証済み / 1 = 問題あり / 3 = 拒否)。
+2. 検証済みなら `scripts/warilink_backup.py restore --from <取得先> --target-db warilink_restore_… …`
+   (鍵は manifest の `key.provider` で選ぶ。環境変数の鍵で作った過去のバックアップも開ける)。
+
+### 削除ジャーナル(S3)
+- `WARILINK_DELETION_JOURNAL=s3://バケット/接頭辞`(本番の起動の検査は形式だけを確かめる。接続は最初に使うとき)。
+- 1 件 = 1 オブジェクト(`records/000000000001.json` …)を上書き禁止の条件付き書き込み(If-None-Match)で置き、
+  `HEAD` を条件付きで更新する。読むときは全世代を一覧し、記録に 2 つ以上の世代・削除の印があれば拒否する。
+- Object Lock は上書き・削除を防ぐ設定の 1 つで、これだけで全履歴の完全性を保証するものではない。連番・hash の連鎖・
+  HEAD の照合と、バックアップのチェックポイントを併用する。記録の末尾を HEAD ごと失った場合は検出できない。

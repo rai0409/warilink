@@ -20,9 +20,9 @@
   確かめられたときだけ finalize する(reconcile)。DB に無いことを根拠に自動で abort にはしない(DB が古い状態に
   戻っている可能性があるため)。未確定が残っている間は、復元を拒否する。
 
-保管先の実装はこのモジュールの JournalStore を満たせばよい(ローカルディレクトリ・テスト用のメモリ)。
-S3 などの外部保管とオブジェクトの世代の扱いは STEP 02 で追加する。ローカルの実装は外部保管ではない
-(OFFSITE_STORAGE_LIVE は BLOCKED のまま)。
+保管先の実装は _AppendJournal の _locked / _state_locked / _write を満たせばよい
+(ローカルディレクトリ・テスト用のメモリ・S3 = app/ops/s3_storage.py の S3Journal、STEP 02)。
+ローカルの実装は外部保管ではない。
 """
 
 from __future__ import annotations
@@ -52,6 +52,10 @@ class JournalError(Exception):
 
 class JournalUnavailable(JournalError):
     """書けない・読めない(再試行で直る可能性がある)。"""
+
+
+class JournalConflict(JournalUnavailable):
+    """同時に書いた別の書き手と番号が重なった(読み直して再試行する)。"""
 
 
 class JournalCorrupt(JournalError):
@@ -193,16 +197,24 @@ class _AppendJournal:
 
     name = "abstract"
 
+    CONFLICT_ATTEMPTS = 5
+
     def prepare(self, op_id: uuid.UUID, targets: Iterable[tuple[str, uuid.UUID | str]]) -> None:
         norm = _norm_targets(targets)
         op = str(op_id)
-        with self._locked():
-            st = self._state_locked()
-            if op in st.pending or op in st.finalized:
-                return  # 同じ操作の再試行(冪等)
-            if op in st.aborted:
-                raise JournalError("取り消した操作は再開できません")
-            self._append(st, {"type": "prepare", "op_id": op, "targets": norm})
+        for _ in range(self.CONFLICT_ATTEMPTS):
+            with self._locked():
+                st = self._state_locked()
+                if op in st.pending or op in st.finalized:
+                    return  # 同じ操作の再試行(冪等)
+                if op in st.aborted:
+                    raise JournalError("取り消した操作は再開できません")
+                try:
+                    self._append(st, {"type": "prepare", "op_id": op, "targets": norm})
+                    return
+                except JournalConflict:
+                    continue  # 別の書き手が先に同じ番号を書いた。読み直す
+        raise JournalUnavailable("削除ジャーナルへの書き込みが競合し続けています")
 
     def finalize(self, op_id: uuid.UUID) -> None:
         self._close(op_id, "finalize")
@@ -212,14 +224,20 @@ class _AppendJournal:
 
     def _close(self, op_id: uuid.UUID, kind: str) -> None:
         op = str(op_id)
-        with self._locked():
-            st = self._state_locked()
-            done = st.finalized if kind == "finalize" else st.aborted
-            if op in done:
-                return  # 冪等
-            if op not in st.pending:
-                raise JournalError(f"{kind} できる未確定の操作がありません")
-            self._append(st, {"type": kind, "op_id": op})
+        for _ in range(self.CONFLICT_ATTEMPTS):
+            with self._locked():
+                st = self._state_locked()
+                done = st.finalized if kind == "finalize" else st.aborted
+                if op in done:
+                    return  # 冪等
+                if op not in st.pending:
+                    raise JournalError(f"{kind} できる未確定の操作がありません")
+                try:
+                    self._append(st, {"type": kind, "op_id": op})
+                    return
+                except JournalConflict:
+                    continue
+        raise JournalUnavailable("削除ジャーナルへの書き込みが競合し続けています")
 
     def state(self) -> JournalState:
         with self._locked():
@@ -358,7 +376,15 @@ def journal_from_url(value: str | None) -> DeletionJournal | None:
     scheme, _, rest = value.partition(":")
     if scheme == "local" and rest:
         return LocalDirJournal(Path(rest))
-    raise JournalConfigError("WARILINK_DELETION_JOURNAL は local:/絶対パス の形式にしてください(外部保管は STEP 02)")
+    if scheme == "s3":
+        from app.ops.offsite import OffsiteError  # noqa: PLC0415
+        from app.ops.s3_storage import S3Journal, parse_s3_url  # noqa: PLC0415
+
+        try:
+            return S3Journal(location=parse_s3_url(value))  # 接続は最初に使うとき(WARILINK_AWS_LIVE=1 が必要)
+        except OffsiteError as e:
+            raise JournalConfigError(str(e)) from None
+    raise JournalConfigError("WARILINK_DELETION_JOURNAL は local:/絶対パス か s3://バケット/接頭辞 にしてください")
 
 
 def journal_problems(value: str | None) -> list[str]:
