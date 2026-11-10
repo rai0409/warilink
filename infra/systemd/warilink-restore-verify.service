@@ -1,0 +1,59 @@
+# このリポジトリは何もインストールしない(STEP 04)。導入先の運用者が確認してから入れる:
+#   sudo install -m 644 infra/systemd/warilink-*.service infra/systemd/warilink-*.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now warilink-purge.timer warilink-backup.timer warilink-monitor.timer warilink-restore-verify.timer
+# 前提: リポジトリは /srv/warilink、実行ユーザー warilink(docker グループ。docker を使えるのは root 相当なので専用にする)、
+# /etc/warilink/production.env(compose の秘密、600)と /etc/warilink/jobs.env(ジョブの設定、600)。
+# infra/ops/warilink-purge.cron.example の cron と同時に使わない(二重の実行になる)。手順は infra/ops/production-runbook.md。
+#
+# 月 1 回の隔離した復元の検証(scripts/warilink_restore_verify.py --execute)。本番の DB には触れない。
+# 一時コンテナ warilink-drill-db(127.0.0.1:55433)を作り、最新のバックアップの受領記録(last-backup.json)の世代を
+# 外部保管から取得 → 検証 → 復元 → 削除の再適用 → 検査 → 片付け。結果は /var/lib/warilink/restore-receipt.json。
+# 復元先は本番ではないため WARILINK_ENVIRONMENT=development で動かす(鍵・削除ジャーナル・外部保管は本番の設定を読む)。
+
+[Unit]
+Description=WariLink monthly isolated restore verification
+Documentation=file:///srv/warilink/infra/ops/production-runbook.md
+Requires=docker.service
+After=docker.service network-online.target warilink-backup.service
+Wants=network-online.target
+StartLimitIntervalSec=1d
+StartLimitBurst=1
+
+[Service]
+Type=oneshot
+User=warilink
+Group=warilink
+WorkingDirectory=/srv/warilink
+EnvironmentFile=/etc/warilink/production.env
+EnvironmentFile=/etc/warilink/jobs.env
+Environment=WARILINK_ENVIRONMENT=development
+StateDirectory=warilink
+StateDirectoryMode=0700
+ExecStartPre=-/usr/bin/docker rm -f warilink-drill-db
+ExecStartPre=/bin/sh -c 'docker run -d --rm --name warilink-drill-db -e POSTGRES_USER=warilink -e POSTGRES_PASSWORD="$$WARILINK_DRILL_DB_PASSWORD" -e POSTGRES_DB=postgres -p 127.0.0.1:55433:5432 postgres:18-alpine && for i in $$(seq 1 60); do docker exec warilink-drill-db pg_isready -U warilink -q && exit 0; sleep 1; done; exit 1'
+ExecStart=/bin/sh -c 'WARILINK_RESTORE_DB_PASSWORD="$$WARILINK_DRILL_DB_PASSWORD" exec /srv/warilink/.venv/bin/python scripts/warilink_restore_verify.py --execute --from-report /var/lib/warilink/last-backup.json --container warilink-drill-db --port 55433 --user warilink --target-db warilink_restore_monthly --workdir /var/lib/warilink/drill-work --receipt-out /var/lib/warilink/restore-receipt.json'
+# 一時コンテナはこのユニットが作ったものだけを消す(本番のコンテナには触れない)
+ExecStopPost=-/usr/bin/docker rm -f warilink-drill-db
+TimeoutStartSec=4h
+UMask=0077
+NoNewPrivileges=yes
+# docker のソケット(root 相当)を使うため、それ以外の権限はできるだけ外す
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+SyslogIdentifier=warilink-restore-verify

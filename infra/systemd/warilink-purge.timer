@@ -1,0 +1,12 @@
+# 毎日 03:30(日本時間)。止まっていた間の分は起動後に 1 回だけ実行する(Persistent)。
+[Unit]
+Description=Daily WariLink retention purge
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=10min
+Unit=warilink-purge.service
+
+[Install]
+WantedBy=timers.target

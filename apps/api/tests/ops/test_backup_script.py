@@ -483,3 +483,23 @@ def test_fetch_script_verifies_an_isolated_copy_and_refuses_unsafe_requests(mod,
     assert fetch_mod.main([*args, "--out", str(tmp_path / "z")], storage=st, provider=kms) == 1
     assert _last_json(capsys)["verified"] is False
     assert mod.created == []  # 取得と検証では DB に触れない
+
+
+def test_backup_status_is_recorded_with_the_record_user(mod, tmp_path, monkeypatch):
+    """STEP 04: ダンプのロール(読み取り専用)とは別のロールで成否を記録できる。既定は従来どおり --user。"""
+    users = []
+
+    def psql(args, db, sql):
+        users.append(args.user)
+        return ""
+
+    spec = importlib.util.spec_from_file_location("backup_record_user_test", SCRIPT)
+    assert spec and spec.loader
+    real = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real)
+    monkeypatch.setattr(real, "psql", psql)
+    real.record_run(_args(user="warilink_backup", record_user="warilink_app"), "warilink", "backup", ok=True)
+    real.record_run(_args(user="warilink_backup"), "warilink", "backup", ok=False)
+    assert users == ["warilink_app", "warilink_backup"]
+    (tmp_path / "root").mkdir()
+    assert real.main(["--record-user", "warilink_app", "prune", "--root", str(tmp_path / "root")]) == 0  # CLI の引数

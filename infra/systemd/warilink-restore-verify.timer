@@ -1,0 +1,11 @@
+# 毎月 1 日 05:00(日本時間、バックアップの後)。結果は restore-receipt.json と監視・運用記録で確かめる。
+[Unit]
+Description=Monthly WariLink isolated restore verification
+
+[Timer]
+OnCalendar=*-*-01 05:00:00 Asia/Tokyo
+Persistent=true
+Unit=warilink-restore-verify.service
+
+[Install]
+WantedBy=timers.target

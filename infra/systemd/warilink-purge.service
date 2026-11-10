@@ -1,0 +1,55 @@
+# このリポジトリは何もインストールしない(STEP 04)。導入先の運用者が確認してから入れる:
+#   sudo install -m 644 infra/systemd/warilink-*.service infra/systemd/warilink-*.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now warilink-purge.timer warilink-backup.timer warilink-monitor.timer warilink-restore-verify.timer
+# 前提: リポジトリは /srv/warilink、実行ユーザー warilink(docker グループ。docker を使えるのは root 相当なので専用にする)、
+# /etc/warilink/production.env(compose の秘密、600)と /etc/warilink/jobs.env(ジョブの設定、600)。
+# infra/ops/warilink-purge.cron.example の cron と同時に使わない(二重の実行になる)。手順は infra/ops/production-runbook.md。
+#
+# 保持期限の削除・DB と画像の整合性の検査・削除の記録(削除ジャーナル)の確定。1 日 1 回(warilink-purge.timer)。
+# 失敗はスクリプトが WARILINK_ALERT_CMD に要約を渡し、終了コード 1 を返す(systemd も失敗として残す)。
+
+[Unit]
+Description=WariLink retention purge and deletion-journal reconcile
+Documentation=file:///srv/warilink/infra/ops/production-runbook.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+# 再試行は 6 時間に 3 回まで(無限に繰り返さない)
+StartLimitIntervalSec=6h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=warilink
+Group=warilink
+WorkingDirectory=/srv/warilink
+EnvironmentFile=/etc/warilink/jobs.env
+RuntimeDirectory=warilink-purge
+Environment=WARILINK_LOCK_DIR=/run/warilink-purge
+ExecStart=/srv/warilink/scripts/warilink_purge_job.sh
+TimeoutStartSec=45min
+Restart=on-failure
+RestartSec=20min
+Nice=10
+UMask=0077
+NoNewPrivileges=yes
+# docker のソケット(root 相当)を使うため、それ以外の権限はできるだけ外す
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+SyslogIdentifier=warilink-purge

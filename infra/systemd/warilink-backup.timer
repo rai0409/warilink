@@ -1,0 +1,12 @@
+# 毎日 04:00(日本時間、保持期限の削除の後)。RPO 24 時間の目標に合わせる。
+[Unit]
+Description=Daily WariLink encrypted offsite backup
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=10min
+Unit=warilink-backup.service
+
+[Install]
+WantedBy=timers.target

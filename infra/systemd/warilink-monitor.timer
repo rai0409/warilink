@@ -1,0 +1,12 @@
+# 15 分ごと(起動の 5 分後から)。前回が終わっていなければ重ねて実行しない(同じ service は 1 つだけ動く)。
+[Unit]
+Description=WariLink monitor every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=warilink-monitor.service
+
+[Install]
+WantedBy=timers.target

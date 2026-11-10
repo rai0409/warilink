@@ -6,6 +6,11 @@
 - API の /health(WARILINK_MONITOR_API_URL を設定したときだけ)と DB への接続
 - 定期ジョブの最後の成功(maintenance_runs): 保持期限の削除・バックアップ・削除済み一覧の書き出し
 - OCR を有効にしている場合は、ワーカーの heartbeat
+- 削除ジャーナル(WARILINK_DELETION_JOURNAL を設定したとき、STEP 04): 記録を読めて壊れていないこと、確定していない削除が
+  WARILINK_MONITOR_JOURNAL_PENDING_HOURS(既定 1)を超えて残っていないこと。ジャーナルを使う構成では、旧方式の
+  削除済み一覧の書き出し(tombstone_export)は WARILINK_TOMBSTONE_FILE を設定したときだけ必須にする
+- 本番(WARILINK_ENVIRONMENT=production、STEP 04): 外形監視の URL・通知コマンド・外部保管・削除ジャーナルが未設定なら
+  「未構成」の異常にする(測れないものを正常として扱わない)
 
 通知:
 - 要約に入れるのは確認の名前と状態だけ(URL・口座・レシート・トークン・鍵・個人情報は入れない)。
@@ -35,7 +40,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.security import now
-from app.models.tables import MaintenanceRun
+from app.models.tables import DeletionJournalOp, MaintenanceRun
+from app.ops.deletion_journal import DeletionJournal, JournalCorrupt, JournalError
 
 # ジョブ名 → 最後の成功からの許容時間(1 日 1 回のジョブに少し余裕を持たせる)
 JOBS = {"retention_purge": 26, "backup": 26, "tombstone_export": 26}
@@ -69,12 +75,52 @@ def check_jobs(db: Session, at: datetime, limits: dict[str, int]) -> list[Check]
     return out
 
 
+def check_journal(db: Session, journal: DeletionJournal, at: datetime, hours: float) -> Check:
+    """DB の外の削除ジャーナルの健全性と、確定していない削除の件数(ID・パスは出さない)。"""
+    try:
+        st = journal.state()
+    except JournalCorrupt:
+        return Check("deletion_journal", False, "corrupt")
+    except JournalError:
+        return Check("deletion_journal", False, "unreadable")
+    cut = at - timedelta(hours=hours)
+    pending = sum(1 for _, t in st.pending.values() if datetime.fromisoformat(t) <= cut)
+    if pending:
+        return Check("deletion_journal", False, f"pending {pending}")
+    unconfirmed = db.query(DeletionJournalOp).filter(DeletionJournalOp.finalized_at.is_(None),
+                                                     DeletionJournalOp.created_at <= cut).count()
+    if unconfirmed:
+        return Check("deletion_journal", False, f"unconfirmed {unconfirmed}")
+    return Check("deletion_journal", True, f"ok seq {st.checkpoint.seq}")
+
+
+def check_config(e: dict[str, str] | os._Environ[str], journal_setting: str | None) -> list[Check]:
+    """本番で必要な監視・通知・保管の設定(値は出さない)。未設定は「未構成」の異常。"""
+    values = {"config:alert_cmd": e.get("WARILINK_ALERT_CMD"), "config:api_url": e.get("WARILINK_MONITOR_API_URL"),
+              "config:offsite": e.get("WARILINK_BACKUP_OFFSITE"), "config:deletion_journal": journal_setting}
+    return [Check(name, bool(v), "ok" if v else "not_configured") for name, v in values.items()]
+
+
+def required_jobs(e: dict[str, str] | os._Environ[str], journal_configured: bool) -> dict[str, int]:
+    """監視するジョブ。削除ジャーナルを使い、旧方式の一覧ファイルを置かない構成では tombstone_export を外す。"""
+    jobs = dict(JOBS)
+    if journal_configured and not e.get("WARILINK_TOMBSTONE_FILE"):
+        jobs.pop("tombstone_export")
+    return jobs
+
+
 def run_checks(*, at: datetime | None = None, env: dict[str, str] | None = None,
                http_get: Callable[[str], int] | None = None) -> list[Check]:
     e = os.environ if env is None else env
     t = at or now()
     checks: list[Check] = []
+    settings = get_settings()
+    production = settings.environment == "production"
+    if production:
+        checks += check_config(e, settings.deletion_journal)
     url = e.get("WARILINK_MONITOR_API_URL", "")
+    if not url and production:
+        checks.append(Check("api:health", False, "not_configured"))  # 測れないものを正常にしない
     if url:
         get = http_get or (lambda u: httpx.get(u, timeout=5).status_code)
         try:
@@ -86,8 +132,19 @@ def run_checks(*, at: datetime | None = None, env: dict[str, str] | None = None,
         with Session(get_engine()) as db:
             db.execute(text("SELECT 1"))
             checks.append(Check("db", True, "ok"))
-            limits = {j: int(e.get(f"WARILINK_MONITOR_MAX_AGE_{j.upper()}_HOURS", h)) for j, h in JOBS.items()}
+            from app.modules.groups.lifecycle import current_journal  # noqa: PLC0415
+
+            try:
+                journal = current_journal()
+            except JournalError:
+                checks.append(Check("deletion_journal", False, "misconfigured"))
+                journal = None
+            jobs = required_jobs(e, journal is not None)
+            limits = {j: int(e.get(f"WARILINK_MONITOR_MAX_AGE_{j.upper()}_HOURS", h)) for j, h in jobs.items()}
             checks += check_jobs(db, t, limits)
+            if journal is not None:
+                checks.append(check_journal(db, journal, t,
+                                            float(e.get("WARILINK_MONITOR_JOURNAL_PENDING_HOURS", "1"))))
             if get_settings().feature_ocr:
                 from app.ocr.jobs import worker_available  # noqa: PLC0415
 
