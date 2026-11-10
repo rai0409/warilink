@@ -151,3 +151,11 @@ RPO 24 時間・RTO 4 時間は目標。本番の量・保管先からの取り�
 
 本番の構成・ロール・起動前検査・導入/更新/戻し方/障害/秘密の入れ替えは `infra/ops/production-runbook.md`。
 ロールの作成は `infra/ops/postgres-roles.sql`(導入時に 1 回、ブートストラップの管理者で。既存の DB では実行しない)。
+
+## 定期ジョブ・監視・復元の検証・負荷(STEP 04)
+
+- systemd のユニット: `infra/systemd/`(インストールしない。手順は `infra/ops/production-runbook.md`「定期ジョブと監視」)。
+- 隔離した復元の検証: `scripts/warilink_restore_verify.py`(既定は計画だけ、`--execute` で実行。一時コンテナ
+  `warilink-drill-*` / `warilink-restore-*` と `warilink_restore_*` の新しい DB にだけ復元する)。
+- 負荷の簡易確認: `scripts/warilink_load_smoke.py --base-url http://127.0.0.1:<ポート> --execute`(localhost の
+  開発・テストの API だけ。本番には使わない。上限: 利用者 50・並列 10・支出 20 件・300 秒)。

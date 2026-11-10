@@ -1,13 +1,17 @@
 """PR C: 監視(python -m app.ops.monitor)。確認の内容・通知の重複の抑制・通知に個人情報や URL を含めないこと。"""
 
+import uuid
 from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.db import get_engine
 from app.core.security import now
+from app.models.tables import DeletionJournalOp
 from app.modules.identity.retention import record_run
 from app.ops import monitor
+from app.ops.deletion_journal import LocalDirJournal
 
 SECRET_URL = "https://api.example.invalid/?token=secret-invite-token"
 
@@ -108,3 +112,66 @@ def test_job_timestamp_order_and_future():
         row = SimpleNamespace(job="backup", last_success_at=success, last_failure_at=failure)
         db = SimpleNamespace(query=lambda model, current=row: SimpleNamespace(all=lambda: [current]))
         assert monitor.check_jobs(db, t, {"backup": 48})[0].ok is expected
+
+
+# ---------------------------------------------------------------- STEP 04: 未構成・削除ジャーナル
+
+
+def test_production_reports_unconfigured_monitoring_instead_of_ok(monkeypatch):
+    """本番で外形監視の URL・通知先・外部保管・削除ジャーナルが無ければ「未構成」の異常(測れないものを正常にしない)。"""
+    monkeypatch.setattr(get_settings(), "environment", "production")
+    for job in monitor.JOBS:
+        _record(job)
+    c = _by_name(monitor.run_checks(env={}))
+    assert c["api:health"] == (False, "not_configured")
+    for name in ("config:alert_cmd", "config:api_url", "config:offsite", "config:deletion_journal"):
+        assert c[name] == (False, "not_configured"), name
+    env = {"WARILINK_ALERT_CMD": "logger", "WARILINK_MONITOR_API_URL": SECRET_URL,
+           "WARILINK_BACKUP_OFFSITE": "s3://warilink-backup-prod/daily"}
+    monkeypatch.setattr(get_settings(), "deletion_journal", "s3://warilink-journal-prod/deletions")
+    checks = monitor.run_checks(env=env, http_get=lambda u: 200)
+    c = _by_name(checks)
+    assert all(c[n][0] for n in ("config:alert_cmd", "config:api_url", "config:offsite", "config:deletion_journal"))
+    assert c["api:health"] == (True, "http 200")
+    summary = monitor.summarize(checks)
+    assert "secret" not in summary and "warilink-backup-prod" not in summary and "logger" not in summary
+
+
+def test_non_production_keeps_the_previous_checks():
+    c = _by_name(monitor.run_checks(env={}))
+    assert "api:health" not in c and not any(n.startswith("config:") for n in c)  # 開発・テストは従来どおり
+
+
+def test_deletion_journal_health_and_required_jobs(tmp_path, monkeypatch):
+    assert "deletion_journal" not in _by_name(monitor.run_checks(env={}))  # 未設定(開発)
+    root = tmp_path / "secret-journal-dir"
+    monkeypatch.setenv("WARILINK_DELETION_JOURNAL", f"local:{root}")
+    get_settings.cache_clear()
+    try:
+        for job in ("retention_purge", "backup"):
+            _record(job)
+        j = LocalDirJournal(root)
+        op = uuid.uuid4()
+        j.prepare(op, [("identity", uuid.uuid4())])
+        c = _by_name(monitor.run_checks(env={}))
+        assert c["deletion_journal"] == (True, "ok seq 1")
+        assert "job:tombstone_export" not in c  # ジャーナルを使い、一覧ファイルを置かない構成では必須にしない
+        assert "job:tombstone_export" in _by_name(monitor.run_checks(env={"WARILINK_TOMBSTONE_FILE": "/x"}))
+        late = monitor.run_checks(env={}, at=now() + timedelta(hours=2))
+        assert _by_name(late)["deletion_journal"] == (False, "pending 1")
+        j.finalize(op)
+        assert _by_name(monitor.run_checks(env={}, at=now() + timedelta(hours=2)))["deletion_journal"][0] is True
+        # DB 側で確定の印が付いていない操作(ジャーナルの確定の後に DB を更新できなかった)も知らせる
+        with Session(get_engine()) as db:
+            db.add(DeletionJournalOp(op_id=uuid.uuid4(), created_at=now() - timedelta(hours=3)))
+            db.commit()
+        assert _by_name(monitor.run_checks(env={}))["deletion_journal"] == (False, "unconfirmed 1")
+        (root / "HEAD").write_text("{")
+        checks = monitor.run_checks(env={})
+        assert _by_name(checks)["deletion_journal"] == (False, "corrupt")
+        assert "secret-journal-dir" not in monitor.summarize(checks)
+        monkeypatch.setenv("WARILINK_DELETION_JOURNAL", "gs://bucket/x")
+        get_settings.cache_clear()
+        assert _by_name(monitor.run_checks(env={}))["deletion_journal"] == (False, "misconfigured")
+    finally:
+        get_settings.cache_clear()

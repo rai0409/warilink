@@ -1,3 +1,6 @@
+# 注意(STEP 04): infra/systemd/ の timer と同時に使わない(同じジョブが二重に動く)。どちらか一方だけを導入する。
+# 本番の構成(infra/compose.production.yaml)では DB が内部ネットワークにだけあるため、WARILINK_COMPOSE_FILE と
+# WARILINK_ENV_FILE を設定して compose の中で実行する(scripts/warilink_purge_job.sh の冒頭)。
 # 例(未導入): 毎日 03:30 JST に期限切れのレシート画像を削除し、DB と画像の整合性を検査する。
 # 導入先で crontab に追加する前に、WARILINK_DATABASE_URL / WARILINK_RECEIPT_STORAGE_DIR と通知先を設定すること。
 # CRON_TZ=Asia/Tokyo

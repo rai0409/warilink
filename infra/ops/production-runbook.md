@@ -89,3 +89,52 @@
 | `WARILINK_RATE_LIMIT_SECRET` | env ファイルを更新して `up -d api`(回数制限の記録が一度だけ数え直しになる) |
 | バックアップの鍵(KMS) | STEP 02(`infra/ops/README.md`)。古い鍵は 30 日を過ぎるまで無効にしない |
 | ブートストラップの管理者 | ロール作成の後は使わない。パスワードを変えて保管する |
+
+## 定期ジョブと監視(STEP 04、2026-11-10。インストールしていない)
+
+`infra/systemd/` の service と timer を導入先で入れる(このリポジトリは systemctl を実行しない)。cron の例
+(`infra/ops/warilink-purge.cron.example`)と**同時に使わない**。
+
+| ジョブ | 時刻(日本時間) | 内容 | 失敗のとき |
+|---|---|---|---|
+| `warilink-purge` | 毎日 03:30 | 保持期限の削除・DB と画像の整合性・削除ジャーナルの未確定の確定(compose の api のイメージで実行) | 終了コード 1、`WARILINK_ALERT_CMD` に要約。6 時間に 3 回まで再試行 |
+| `warilink-backup` | 毎日 04:00 | 暗号化 → S3 → 記録した世代の読み戻しの検証 → 成否の記録(ダンプは `warilink_backup`、記録は `warilink_app`)→ 30 日を過ぎたローカルの分を削除 | 成功を記録しない(監視の `job:backup` が 26 時間で異常)。12 時間に 2 回まで再試行 |
+| `warilink-monitor` | 15 分ごと | ジョブの最後の成功・削除ジャーナル・DB・Web 経由の `/api/v1/health`・本番の設定の欠け | 0 正常 / 1 異常(通知)/ 2 通知の失敗(outbox に残して次回また送る) |
+| `warilink-restore-verify` | 毎月 1 日 05:00 | 一時コンテナへ隔離した復元の検証(`scripts/warilink_restore_verify.py --execute`) | `restore-receipt.json` の result が FAIL。本番の DB には触れない |
+
+用意するもの(導入先): 実行ユーザー `warilink`(docker グループ。root 相当なので専用にする)、`/srv/warilink`(リポジトリと
+`uv sync --group aws` 済みの `.venv`)、`/etc/warilink/production.env`(compose の秘密)、`/etc/warilink/jobs.env`
+(`WARILINK_COMPOSE_FILE`・`WARILINK_ENV_FILE`・ホストの `WARILINK_ALERT_CMD`・`WARILINK_DRILL_DB_PASSWORD`)。
+インターネット側の HTTPS の外形監視は、外部の監視サービスで別に行う(コンテナの中からは測れない)。
+
+### 監視が知らせること(`python -m app.ops.monitor`)
+
+- `job:retention_purge` / `job:backup` / `job:tombstone_export`: 最後の成功が 26 時間より古い・失敗が後・未来の時刻。
+  削除ジャーナルを使い一覧ファイルを置かない構成では `tombstone_export` は対象外。`job:backup` の成功は、外部保管の
+  世代を読み戻して検証できたときだけ記録される(STEP 02)= 外部のバックアップが古いことも、これで分かる。
+- `deletion_journal`: `corrupt` / `unreadable` / `misconfigured` / `pending N`(ジャーナルの未確定が 1 時間超)/
+  `unconfirmed N`(DB の確定の印が 1 時間超付かない)。
+- 本番だけ: `config:alert_cmd` / `config:api_url` / `config:offsite` / `config:deletion_journal` が未設定なら
+  `not_configured`、`api:health` も `not_configured`(測れないものを正常にしない)。
+- 通知には確認の名前と状態だけを入れる(URL・ID・パス・口座・トークンは入れない)。同じ内容は 6 時間まとめ、直ったら 1 回だけ「回復」。
+
+## 復旧の目標と測り方(STEP 04)
+
+- **目標**(実測ではない): RPO 24 時間(日次のバックアップ)、RTO 4 時間(新しい VM で取得 → 検証 → 復元 → 再適用 → 起動)。
+- **測り方**: 月次の `warilink-restore-verify` の `restore-receipt.json` の `measured_restore_seconds`(取得・検証・復元・
+  検査の合計)と、各段階の秒数。RTO の全体は、これに VM の用意・DNS の切り替え・起動の確認を足して、訓練の記録で測る。
+  RPO は `job:backup` の最後の成功の時刻で決まる(監視の 26 時間の上限)。
+- **2026-11-10 の実測(ローカル・合成データ 17 行・画像 1 枚、一時コンテナ)**: 取得・検証・復元・検査で 1.84 秒。
+  本番の量・S3 からの取り出し・回線の速さを含まないため、**`RPO_RTO_PROVEN=BLOCKED`**。
+- 依存: 復元には (1) 外部保管(S3)の受領記録の世代、(2) バックアップの鍵(KMS の Decrypt 権限、入れ替え前の鍵も 30 日)、
+  (3) 削除ジャーナル(未確定が無いこと)の 3 つがそろう必要がある。どれかが欠けたら復元しない(BLOCKED として報告する)。
+
+## 誤った復元・障害のときの止め方
+
+- 復元は常に `warilink_restore_*` の新しい DB へ行い、検証の結果(receipt)が PASS になるまで本番へ切り替えない。
+  検証の前に本番の DB を上書き・削除しない。誤って別のバックアップを戻したと分かったら、その復元先を破棄して
+  最初からやり直す(本番へ「切り戻す」操作をしない)。
+- 段階的に止める条件: `deletion_journal` が `corrupt` → 削除の操作(退会など)が 503 になり、復元も拒否される。
+  運用者はジャーナルの保管先を調べ、直るまで復元しない。`job:backup` が 2 日続けて失敗 → 更新(デプロイ)を止める。
+  `api:health` の失敗が続く → 外部の監視で利用者への影響を確かめ、VM の障害の手順へ。
+- 権限: 復元の検証は取得・復号だけの権限(`infra/ops/README.md` の IAM の表)。本番の DB の管理者の権限は使わない。

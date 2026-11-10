@@ -1,0 +1,53 @@
+# このリポジトリは何もインストールしない(STEP 04)。導入先の運用者が確認してから入れる:
+#   sudo install -m 644 infra/systemd/warilink-*.service infra/systemd/warilink-*.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now warilink-purge.timer warilink-backup.timer warilink-monitor.timer warilink-restore-verify.timer
+# 前提: リポジトリは /srv/warilink、実行ユーザー warilink(docker グループ。docker を使えるのは root 相当なので専用にする)、
+# /etc/warilink/production.env(compose の秘密、600)と /etc/warilink/jobs.env(ジョブの設定、600)。
+# infra/ops/warilink-purge.cron.example の cron と同時に使わない(二重の実行になる)。手順は infra/ops/production-runbook.md。
+#
+# 監視(app.ops.monitor)。DB は内部ネットワークにだけあるので、本番の compose の api のイメージで 1 回実行する。
+# コンテナからは外へ出られないため、通知の要約はまず /var/lib/warilink-monitor/outbox に書き、ホストの
+# WARILINK_ALERT_CMD(jobs.env)で送る。送れなければ outbox を残して次回また送り、終了コード 2 にする。
+# 終了コード: 0 = 正常 / 1 = 異常あり(通知済み)/ 2 = 通知の失敗(既存の契約どおり)。外形監視は Web(http://web:3000)。
+# インターネット側の HTTPS の外形監視は、外部の監視サービスで別に行う(このユニットでは測れない)。
+
+[Unit]
+Description=WariLink monitor (jobs, deletion journal, health)
+Documentation=file:///srv/warilink/infra/ops/production-runbook.md
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=warilink
+Group=warilink
+WorkingDirectory=/srv/warilink
+EnvironmentFile=/etc/warilink/jobs.env
+EnvironmentFile=/etc/warilink/production.env
+StateDirectory=warilink-monitor
+StateDirectoryMode=0700
+ExecStart=/bin/sh -c 'docker compose -f "$$WARILINK_COMPOSE_FILE" --env-file "$$WARILINK_ENV_FILE" run --rm -T --no-deps --user "$$(id -u):$$(id -g)" -v /var/lib/warilink-monitor:/state -e WARILINK_MONITOR_STATE=/state/monitor-state.json -e WARILINK_MONITOR_API_URL=http://web:3000 -e WARILINK_ALERT_CMD="cat >> /state/outbox" -e WARILINK_BACKUP_OFFSITE api python -m app.ops.monitor --json; rc=$$?; if [ -s /var/lib/warilink-monitor/outbox ]; then if [ -n "$$WARILINK_ALERT_CMD" ] && sh -c "$$WARILINK_ALERT_CMD" < /var/lib/warilink-monitor/outbox; then rm -f /var/lib/warilink-monitor/outbox; else echo "alert delivery failed" >&2; exit 2; fi; fi; exit $$rc'
+# 異常(1)も通知の失敗(2)も systemd 上は失敗として残す。再試行は次の timer で行う
+TimeoutStartSec=5min
+UMask=0077
+NoNewPrivileges=yes
+# docker のソケット(root 相当)を使うため、それ以外の権限はできるだけ外す
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+SyslogIdentifier=warilink-monitor

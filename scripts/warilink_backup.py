@@ -113,10 +113,13 @@ def dump_cmd(args: argparse.Namespace, db: str) -> list[str]:
 
 
 def record_run(args: argparse.Namespace, db: str, job: str, *, ok: bool) -> None:
-    """バックアップの成否を記録する。記録できない成功は成功として扱わない。"""
+    """バックアップの成否を記録する。記録できない成功は成功として扱わない。
+
+    STEP 04: 本番のダンプのロール(warilink_backup)は読み取り専用なので、記録は --record-user(既定は --user)で行う。"""
     column = "last_success_at" if ok else "last_failure_at"
+    recorder = argparse.Namespace(**{**vars(args), "user": getattr(args, "record_user", None) or args.user})
     try:
-        psql(args, db, f"INSERT INTO maintenance_runs(job, {column}) VALUES ('{job}', now()) "
+        psql(recorder, db, f"INSERT INTO maintenance_runs(job, {column}) VALUES ('{job}', now()) "
                        f"ON CONFLICT (job) DO UPDATE SET {column} = now();")
     except (subprocess.CalledProcessError, OSError) as e:
         raise Refused("maintenance_runs に記録できませんでした") from e
@@ -832,6 +835,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--container", default=os.environ.get("WARILINK_DB_CONTAINER", "warilink-db-1"))
     p.add_argument("--user", default=os.environ.get("POSTGRES_USER", "warilink"))
     p.add_argument("--port", default="55432")
+    p.add_argument("--record-user", default=None,
+                   help="maintenance_runs に成否を書くロール(既定は --user。本番は warilink_app。STEP 04)")
     sub = p.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("backup")
     b.add_argument("--db", required=True)
