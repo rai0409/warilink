@@ -72,9 +72,11 @@ def test_backup_and_restore_units_keep_the_step01_to_03_contracts():
     assert "> /var/lib/warilink/last-backup.tmp && mv" in backup  # 失敗の出力で受領記録を上書きしない
     assert "Environment=WARILINK_ENVIRONMENT=production" in backup
     restore = UNITS.joinpath("warilink-restore-verify.service").read_text()
-    assert "--execute" in restore and "--container warilink-drill-db" in restore
-    assert "--target-db warilink_restore_" in restore and "--from-report /var/lib/warilink/last-backup.json" in restore
-    assert restore.count("docker rm -f warilink-drill-db") == 2  # 自分で作った一時コンテナだけを片付ける
+    assert "scripts/warilink_restore_service.py" in restore
+    assert "docker rm" not in restore and "ExecStartPre=" not in restore and "ExecStopPost=" not in restore
+    runner = (ROOT / "scripts/warilink_restore_service.py").read_text()
+    assert "--execute" in runner and "/var/lib/warilink/last-backup.json" in runner
+    assert "inspect_owned(container_id, run_id)" in runner and "restore-receipt.json" in runner
     monitor = UNITS.joinpath("warilink-monitor.service").read_text()
     assert "exit 2" in monitor and "outbox" in monitor  # 通知の失敗は終了コード 2(既存の契約)
     cron = (ROOT / "infra/ops/warilink-purge.cron.example").read_text()

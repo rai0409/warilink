@@ -613,6 +613,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
                       "確認のうえ --accept-missing-images を付けてください")
     # 2. 新しい DB へ。復号した内容を平文のファイルに書かず pg_restore へ流す
     psql(args, "postgres", f'CREATE DATABASE "{args.target_db}"')
+    if callback := getattr(args, "on_database_created", None):
+        callback()
     proc = subprocess.Popen(["docker", "exec", "-i", args.container, "pg_restore", "-U", args.user, "-d",
                              args.target_db, "--no-owner", "--no-privileges", "--exit-on-error"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -684,6 +686,8 @@ def cmd_restore_plaintext(args: argparse.Namespace, src: Path, manifest: dict) -
         return 1
     # 2. 新しい DB へ復元(外部キー制約も作り直されるため、参照切れがあれば失敗する)
     psql(args, "postgres", f'CREATE DATABASE "{args.target_db}"')
+    if callback := getattr(args, "on_database_created", None):
+        callback()
     with (src / "db.dump").open("rb") as f:
         pg(args, "pg_restore", "-U", args.user, "-d", args.target_db, "--no-owner", "--no-privileges",
            "--exit-on-error", stdin=f)
