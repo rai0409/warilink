@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -54,14 +57,28 @@ def main():
     container_id = None
     result = 1
     cleanup = 'not created'
+    work_cleanup = 'not created'
+    work_root = None
+    work_identity = None
+    child = None
+    child_stopped = True
+    launching = False
+    interrupted = False
     def terminate(signum, frame):
+        nonlocal interrupted
+        if launching:
+            interrupted = True
+            return
         raise InterruptedError('terminated')
-    signal.signal(signal.SIGTERM, terminate)
-    signal.signal(signal.SIGINT, terminate)
+    previous_term = signal.signal(signal.SIGTERM, terminate)
+    previous_int = signal.signal(signal.SIGINT, terminate)
     try:
         password = os.environ['WARILINK_DRILL_DB_PASSWORD']
         if not password:
             raise ValueError('missing password')
+        work_root = Path(tempfile.mkdtemp(prefix=f'drill-{run_id}-', dir=RECEIPT.parent))
+        info = work_root.lstat()
+        work_identity = (info.st_dev, info.st_ino)
         env = dict(os.environ, POSTGRES_PASSWORD=password)
         container_id = docker('run', '-d', '--name', name, '--label', f'{OWNER}=monthly-restore', '--label',
                               f'{RUN}={run_id}', '-e', 'POSTGRES_USER=warilink', '-e', 'POSTGRES_PASSWORD',
@@ -90,9 +107,18 @@ def main():
                          WARILINK_RESTORE_CONTAINER_ID=container_id, WARILINK_RESTORE_RUN_ID=run_id)
         cmd = [sys.executable, str(ROOT / 'warilink_restore_verify.py'), '--execute', '--from-report',
                '/var/lib/warilink/last-backup.json', '--container', name, '--port', str(port), '--user', 'warilink',
-               '--target-db', target, '--workdir', f'/var/lib/warilink/drill-work-{run_id}',
+               '--target-db', target, '--workdir', str(work_root / 'work'),
                '--receipt-out', str(RECEIPT)]
-        result = subprocess.run(cmd, env=child_env, capture_output=True, timeout=14000, check=False).returncode
+        launching = True
+        try:
+            child = subprocess.Popen(cmd, env=child_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            child_stopped = False
+        finally:
+            launching = False
+        if interrupted:
+            raise InterruptedError('terminated during child launch')
+        result = child.wait(timeout=14000)
+        child_stopped = True
         if result == 0:
             receipt = json.loads(RECEIPT.read_text())
             if receipt.get('target_db') != target or receipt.get('result') != 'PASS':
@@ -100,11 +126,36 @@ def main():
     except (Exception, KeyboardInterrupt):
         result = 1
     finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        if child is not None and not child_stopped:
+            try:
+                if child.poll() is None:
+                    child.terminate()
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=10)
+                child_stopped = True
+            except Exception:
+                result = 1
+        if work_root is not None:
+            try:
+                info = work_root.lstat()
+                if (not child_stopped or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                        or (info.st_dev, info.st_ino) != work_identity):
+                    raise RuntimeError('workdir identity or child state unknown')
+                shutil.rmtree(work_root)
+                work_cleanup = 'removed owned workdir'
+            except Exception:
+                work_cleanup = 'workdir cleanup failed'
+                result = 1
         if container_id:
             try:
                 if inspect_owned(container_id, run_id) is None:
                     raise ValueError('container ownership mismatch')
-                docker('rm', '-f', container_id)
+                docker('rm', '-f', '-v', container_id)
                 cleanup = 'removed owned container'
             except Exception:
                 cleanup = 'container cleanup failed'
@@ -114,11 +165,14 @@ def main():
             if receipt.get('target_db') != target:
                 receipt = {'tool': 'warilink_restore_verify', 'target_db': target}
             receipt['container_cleanup'] = cleanup
+            receipt['workdir_cleanup'] = work_cleanup
             if result:
                 receipt['result'] = 'FAIL'
             RECEIPT.write_text(json.dumps(receipt, ensure_ascii=False, indent=1) + '\n')
         except (OSError, ValueError):
             result = 1
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
     return 0 if result == 0 else 1
 
 

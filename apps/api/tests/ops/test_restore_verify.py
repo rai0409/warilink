@@ -103,6 +103,7 @@ def test_missing_journal_keys_or_a_used_workdir_are_refused(rv, mod, tmp_path, c
     (tmp_path / "work" / "x").write_text("x")
     assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3  # 作業ディレクトリが空でない
     (tmp_path / "work" / "x").unlink()
+    (tmp_path / "work").chmod(0o700)
     monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
     assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
     assert "削除ジャーナル" in json.loads((tmp_path / "receipt.json").read_text())["reason"]
@@ -227,6 +228,38 @@ def test_keep_preserves_db_and_workdir(rv, mod, tmp_path, capsys):  # noqa: F811
     report, _ = _backup(mod, tmp_path, capsys, kms)
     assert rv.main(_args(tmp_path, report) + ["--execute", "--keep"], provider=kms) == 0
     assert rv.drops == [] and (tmp_path / "work").is_dir()
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_existing_empty_owned_workdir(rv, mod, tmp_path, capsys, keep):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    assert rv.main(_args(tmp_path, report) + ["--execute"] + (["--keep"] if keep else []), provider=kms) == 0
+    assert work.exists() is keep
+    assert rv.drops == ([] if keep else ["warilink_restore_verify_t"])
+
+
+def test_existing_unsafe_workdir_is_refused(rv, mod, tmp_path, capsys):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o755)
+    work.chmod(0o755)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert work.exists() and not rv.drops and not rv.restores
+
+
+def test_existing_workdir_owned_by_other_user_is_refused(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    real_owner = work.stat().st_uid
+    monkeypatch.setattr(rv.os, "geteuid", lambda: real_owner + 1)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert work.exists() and not rv.drops and not rv.restores
 
 
 def test_signal_after_creation_runs_cleanup(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811

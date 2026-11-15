@@ -27,6 +27,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -80,8 +81,22 @@ def guards(a: argparse.Namespace, *, check_db: bool) -> tuple[object, dict, obje
     except wb.Refused as e:
         raise Refused(str(e)) from None
     work = Path(a.workdir)
-    if work.is_symlink() or (work.exists() and any(work.iterdir())):
-        raise Refused("作業ディレクトリが空ではありません")
+    try:
+        st = work.lstat()
+    except FileNotFoundError:
+        st = None
+    except OSError:
+        raise Refused("作業ディレクトリを確認できません") from None
+    if st is not None:
+        try:
+            if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077
+                    or st.st_mode & 0o700 != 0o700 or any(work.iterdir())):
+                raise Refused("作業ディレクトリの所有・権限・空状態を確認できません")
+        except OSError:
+            raise Refused("作業ディレクトリを確認できません") from None
+        a.work_identity = (st.st_dev, st.st_ino)
+    else:
+        a.work_identity = None
     source = a.source or os.environ.get("WARILINK_BACKUP_OFFSITE", "")
     try:
         storage = storage_from_env({"WARILINK_BACKUP_OFFSITE": source, **{
@@ -103,8 +118,6 @@ def guards(a: argparse.Namespace, *, check_db: bool) -> tuple[object, dict, obje
                                                       or os.environ.get("WARILINK_BACKUP_KEYS")):
         raise Refused("バックアップの鍵(WARILINK_BACKUP_KMS_KEY_ID か WARILINK_BACKUP_KEYS)がありません")
     if check_db:
-        if work.exists():
-            raise Refused("作業ディレクトリは新規に作成する必要があります")
         try:
             expected_id = os.environ.get("WARILINK_RESTORE_CONTAINER_ID")
             expected_run = os.environ.get("WARILINK_RESTORE_RUN_ID")
@@ -130,8 +143,15 @@ def tombstones_from_journal(state) -> list[dict]:
 def execute(a: argparse.Namespace, storage, backup: dict, journal) -> dict:
     steps: list[dict] = []
     work = Path(a.workdir)
-    work.mkdir(parents=True, exist_ok=False, mode=0o700)
-    work_stat = work.stat()
+    if a.work_identity is None:
+        work.mkdir(parents=True, exist_ok=False, mode=0o700)
+        work_stat = work.lstat()
+    else:
+        work_stat = work.lstat()
+        if (not stat.S_ISDIR(work_stat.st_mode) or work_stat.st_uid != os.geteuid()
+                or work_stat.st_mode & 0o077 or work_stat.st_mode & 0o700 != 0o700
+                or (work_stat.st_dev, work_stat.st_ino) != a.work_identity or any(work.iterdir())):
+            raise Refused("作業ディレクトリが変更されました")
     result = "FAIL"
     created_db = False
 
