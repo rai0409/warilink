@@ -159,6 +159,40 @@ def test_creation_ambiguous_refuses_unverified_cleanup(runner, monkeypatch, fail
     assert retained['container_id'] == (None if failure == 'inspect_error' else state['id'])
 
 
+@pytest.mark.parametrize('shape', ['missing_config', 'missing_labels', 'invalid_json'])
+def test_creation_ambiguous_records_candidate_before_metadata_check(runner, monkeypatch, shape):
+    module, state, calls = runner
+    original = module.docker
+
+    def docker(*args, **kwargs):
+        if args[0] == 'run':
+            original(*args, **kwargs)
+            raise subprocess.CalledProcessError(1, args)
+        if args[0] == 'inspect' and args[1].startswith('warilink-drill-'):
+            raw = original(*args, **kwargs)
+            if shape == 'invalid_json':
+                return '{invalid'
+            item = json.loads(raw)[0]
+            if shape == 'missing_config':
+                item.pop('Config')
+            else:
+                item['Config'].pop('Labels')
+            return json.dumps([item])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, 'docker', docker)
+    assert module.main() == 1
+    assert not [args for args in calls if args[0] == 'rm']
+    receipt = json.loads(module.RECEIPT.read_text())
+    assert receipt['result'] == 'FAIL'
+    assert receipt['creation_check'] == 'unconfirmed'
+    retained = receipt['retained_resources']
+    assert retained['run_id'] == state['run']
+    assert retained['container_name'] == 'warilink-drill-' + state['run']
+    assert retained['confirmation'] == 'unconfirmed'
+    assert retained['container_id'] == (None if shape == 'invalid_json' else state['id'])
+
+
 def test_timeout_reaps_child_before_removing_workdir(runner, monkeypatch, tmp_path):
     module, state, calls = runner
     untouched = tmp_path / 'unrelated'

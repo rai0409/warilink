@@ -151,9 +151,9 @@ def main():
             try:
                 item = json.loads(docker('inspect', name))[0]
                 found = item['Id']
-                labels = item['Config']['Labels'] or {}
                 if isinstance(found, str) and re.fullmatch(r'[0-9a-f]{64}', found):
                     candidate_id = found
+                labels = item['Config']['Labels'] or {}
                 if (candidate_id is None or labels.get(OWNER) != 'monthly-restore' or labels.get(RUN) != run_id
                         or inspect_owned(candidate_id, run_id) is None):
                     raise ValueError('container ownership mismatch')
