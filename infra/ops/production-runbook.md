@@ -102,6 +102,22 @@
 | `warilink-monitor` | 15 分ごと | ジョブの最後の成功・削除ジャーナル・DB・Web 経由の `/api/v1/health`・本番の設定の欠け | 0 正常 / 1 異常(通知)/ 2 通知の失敗(outbox に残して次回また送る) |
 | `warilink-restore-verify` | 毎月 1 日 05:00 | 一時コンテナへ隔離した復元の検証(`scripts/warilink_restore_verify.py --execute`) | `restore-receipt.json` の result が FAIL。本番の DB には触れない |
 
+月次復元は実行ごとのIDとラベルを持つコンテナを作る。Docker障害、SIGKILL、ホスト停止では片付けが完了しない場合がある。
+残存候補は `docker ps -a --filter label=org.warilink.restore.owner=monthly-restore` で確認し、実行IDと完全IDを照合して
+運用者が個別に調査する。Docker inspect からコンテナの環境変数にあるDBパスワードを参照できるため、出力を記録・共有しない。
+ランナーは所有を確認したコンテナと匿名volume、および子プロセスの終了後に専用作業領域を削除する。
+子プロセスの停止を確認できない場合は両方のcleanupを保留し、receiptの `retained_resources` に実行ID、完全ID、
+作業領域パスを記録する。運用者は子プロセスの終了を確認し、記録と所有ラベル・パスを照合してから個別に対処する。
+コンテナ作成結果を確認できない場合もFAILとし、receiptに実行ID・コンテナ名・取得できた完全IDと確認状態を記録する。
+inspectの失敗はコンテナ不在を意味しないため、所有ラベルと完全IDを確認するまで削除しない。
+SIGKILL、ホスト停止やDocker障害ではこれらが残ることがあるため、実行IDと完全IDを確認して調査する。
+直接CLIで実行するときも、専用コンテナに `org.warilink.restore.owner=monthly-restore` と
+`org.warilink.restore.run=<32桁の小文字16進乱数>` のラベルが必要。運用者は新規のPostgreSQL 18コンテナを
+一意な `warilink-drill-<実行ID>` 名、`127.0.0.1` 限定のポートで作り、Dockerへのパスワード受渡しは
+環境変数名だけを指定する `-e POSTGRES_PASSWORD` を使う。直接CLIはラベルと完全IDを照合してから実行し、
+コンテナ自体の停止・削除はしない。`--keep` は作成したDBと作業領域を残す。
+既存の空作業ディレクトリは実行ユーザー所有かつ権限0700の場合に使用できる。
+
 用意するもの(導入先): 実行ユーザー `warilink`(docker グループ。root 相当なので専用にする)、`/srv/warilink`(リポジトリと
 `uv sync --group aws` 済みの `.venv`)、`/etc/warilink/production.env`(compose の秘密)、`/etc/warilink/jobs.env`
 (`WARILINK_COMPOSE_FILE`・`WARILINK_ENV_FILE`・ホストの `WARILINK_ALERT_CMD`・`WARILINK_DRILL_DB_PASSWORD`)。

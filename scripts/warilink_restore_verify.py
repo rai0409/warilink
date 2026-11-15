@@ -26,6 +26,8 @@ import io
 import json
 import os
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import time
@@ -35,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import warilink_backup as wb  # noqa: E402
-
+import warilink_restore_service as service  # noqa: E402
 from app.ops.deletion_journal import JournalError  # noqa: E402
 from app.ops.offsite import LocalDirStorage, OffsiteError, storage_from_env  # noqa: E402
 
@@ -79,8 +81,22 @@ def guards(a: argparse.Namespace, *, check_db: bool) -> tuple[object, dict, obje
     except wb.Refused as e:
         raise Refused(str(e)) from None
     work = Path(a.workdir)
-    if work.exists() and any(work.iterdir()):
-        raise Refused("作業ディレクトリが空ではありません")
+    try:
+        st = work.lstat()
+    except FileNotFoundError:
+        st = None
+    except OSError:
+        raise Refused("作業ディレクトリを確認できません") from None
+    if st is not None:
+        try:
+            if (not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077
+                    or st.st_mode & 0o700 != 0o700 or any(work.iterdir())):
+                raise Refused("作業ディレクトリの所有・権限・空状態を確認できません")
+        except OSError:
+            raise Refused("作業ディレクトリを確認できません") from None
+        a.work_identity = (st.st_dev, st.st_ino)
+    else:
+        a.work_identity = None
     source = a.source or os.environ.get("WARILINK_BACKUP_OFFSITE", "")
     try:
         storage = storage_from_env({"WARILINK_BACKUP_OFFSITE": source, **{
@@ -103,9 +119,16 @@ def guards(a: argparse.Namespace, *, check_db: bool) -> tuple[object, dict, obje
         raise Refused("バックアップの鍵(WARILINK_BACKUP_KMS_KEY_ID か WARILINK_BACKUP_KEYS)がありません")
     if check_db:
         try:
+            expected_id = os.environ.get("WARILINK_RESTORE_CONTAINER_ID")
+            expected_run = os.environ.get("WARILINK_RESTORE_RUN_ID")
+            if (expected_id is None) != (expected_run is None):
+                raise Refused("隔離コンテナの所有を確認できません")
+            container_id, run_id = service.resolve_owned(a.container, expected_id, expected_run)
+            a.container = container_id
+            a.owned_run_id = run_id
             if wb.db_exists(a, a.target_db):
                 raise Refused("復元先の DB が既にあります")
-        except (subprocess.CalledProcessError, OSError):
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError, IndexError):
             raise Refused("隔離用のコンテナに接続できません") from None
     return storage, backup, journal
 
@@ -120,8 +143,15 @@ def tombstones_from_journal(state) -> list[dict]:
 def execute(a: argparse.Namespace, storage, backup: dict, journal) -> dict:
     steps: list[dict] = []
     work = Path(a.workdir)
-    work.mkdir(parents=True, exist_ok=True)
-    os.chmod(work, 0o700)
+    if a.work_identity is None:
+        work.mkdir(parents=True, exist_ok=False, mode=0o700)
+        work_stat = work.lstat()
+    else:
+        work_stat = work.lstat()
+        if (not stat.S_ISDIR(work_stat.st_mode) or work_stat.st_uid != os.geteuid()
+                or work_stat.st_mode & 0o077 or work_stat.st_mode & 0o700 != 0o700
+                or (work_stat.st_dev, work_stat.st_ino) != a.work_identity or any(work.iterdir())):
+            raise Refused("作業ディレクトリが変更されました")
     result = "FAIL"
     created_db = False
 
@@ -153,15 +183,20 @@ def execute(a: argparse.Namespace, storage, backup: dict, journal) -> dict:
     restore_out: dict = {}
 
     def restore_step():
-        nonlocal created_db
         tomb = work / "tombstones.jsonl"
         tomb.write_text("".join(json.dumps(r) + "\n" for r in tombstones_from_journal(state_box["st"])))
         ns = argparse.Namespace(**{**vars(a), "from": str(work / "fetched"), "receipts_target": str(work / "receipts"),
                                    "tombstones": str(tomb), "accept_missing_images": False})
+        def database_created():
+            nonlocal created_db
+            created_db = True
+
+        ns.on_database_created = database_created
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            created_db = True
             rc = wb.cmd_restore(ns)
+        if rc == 0 and not created_db:
+            raise RuntimeError("database creation was not confirmed")
         lines = [ln for ln in buf.getvalue().splitlines() if ln.startswith("{")]
         restore_out.update(json.loads(lines[-1]) if lines else {})
         return ("PASS" if rc == 0 else "FAIL"), f"rc {rc}"
@@ -173,23 +208,48 @@ def execute(a: argparse.Namespace, storage, backup: dict, journal) -> dict:
         return ("PASS" if ok else "FAIL"), ("all checks true, journal verified" if ok else f"failed: {bad}")
 
     t_start = time.monotonic()
-    ok = step("journal_integrity", journal_step) and step("fetch_and_verify", fetch_step) \
-        and step("restore_and_reapply", restore_step) and step("verify_restored", verify_step)
-    rto = round(time.monotonic() - t_start, 2)
-    result = "PASS" if ok else "FAIL"
-    # 片付け: 隔離した復元先と作業ディレクトリ(復号した画像を含む)だけを消す
     cleanup = []
-    if not a.keep:
-        if created_db:
+    ok = False
+    previous_signals = {}
+    def interrupted(signum, frame):
+        raise InterruptedError("interrupted")
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous_signals[sig] = signal.signal(sig, interrupted)
+    try:
+        ok = step("journal_integrity", journal_step) and step("fetch_and_verify", fetch_step) \
+            and step("restore_and_reapply", restore_step) and step("verify_restored", verify_step)
+        result = "PASS" if ok else "FAIL"
+    except Exception:
+        steps.append({"name": "unexpected_error", "status": "FAIL", "seconds": 0, "detail": "unexpected error"})
+    finally:
+        for sig in previous_signals:
+            signal.signal(sig, signal.SIG_IGN)
+        rto = round(time.monotonic() - t_start, 2)
+        if not a.keep:
+            if created_db:
+                try:
+                    container_id = a.container
+                    run_id = a.owned_run_id
+                    if not container_id or not run_id or service.inspect_owned(container_id, run_id) is None:
+                        raise RuntimeError("container ownership unknown")
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        if wb.cmd_drop(argparse.Namespace(**{**vars(a), "container": container_id})) != 0:
+                            raise RuntimeError("drop failed")
+                    cleanup.append("dropped target db")
+                except Exception:
+                    cleanup.append("drop failed")
+                    result = "FAIL"
             try:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    wb.cmd_drop(argparse.Namespace(**{**vars(a)}))
-                cleanup.append("dropped target db")
-            except (wb.Refused, subprocess.CalledProcessError, OSError):
-                cleanup.append("drop failed")
+                current = work.lstat()
+                if work.is_symlink() or (current.st_dev, current.st_ino) != (work_stat.st_dev, work_stat.st_ino):
+                    raise RuntimeError("workdir identity changed")
+                shutil.rmtree(work)
+                cleanup.append("removed workdir")
+            except Exception:
+                cleanup.append("workdir cleanup failed")
                 result = "FAIL"
-        shutil.rmtree(work, ignore_errors=True)
-        cleanup.append("removed workdir")
+        for sig, handler in previous_signals.items():
+            signal.signal(sig, handler)
     return {"result": result, "steps": steps, "measured_restore_seconds": rto if ok else None,
             "restored": {k: restore_out.get(k) for k in ("rows", "images", "reapplied") if k in restore_out},
             "cleanup": cleanup}
@@ -230,6 +290,9 @@ def main(argv: list[str] | None = None, *, storage=None, provider=None) -> int:
     except Refused as e:
         receipt.update({"result": "REFUSED", "reason": str(e)})
         rc = 3
+    except Exception:
+        receipt.update({"result": "FAIL", "reason": "unexpected error"})
+        rc = 1
     receipt["finished_at"] = datetime.now(UTC).isoformat()
     text = json.dumps(receipt, ensure_ascii=False, indent=1)
     if a.receipt_out:

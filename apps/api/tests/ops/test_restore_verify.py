@@ -6,6 +6,8 @@
 
 import importlib.util
 import json
+import os
+import signal
 import sys
 import uuid
 
@@ -27,10 +29,17 @@ def rv(mod, monkeypatch):  # noqa: F811
     assert spec and spec.loader
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
+    m.real_resolve_owned = m.service.resolve_owned
+    m.real_inspect_owned = m.service.inspect_owned
+    monkeypatch.setenv("WARILINK_RESTORE_CONTAINER_ID", "a" * 64)
+    monkeypatch.setenv("WARILINK_RESTORE_RUN_ID", "run-id")
+    monkeypatch.setattr(m.service, "inspect_owned", lambda container_id, run_id: {})
+    monkeypatch.setattr(m.service, "resolve_owned", lambda name, expected_id, expected_run: ("a" * 64, "run-id"))
     drops, restores = [], []
 
     def cmd_restore(ns):
         restores.append(ns)
+        ns.on_database_created()
         print(json.dumps({"restored": True, "checks": {"row_counts": True, "deletions_hold": True},
                           "journal": {"status": "verified"}, "rows": 17, "images": 2,
                           "reapplied": {"identity": 1, "destination": 0, "group": 0}}))
@@ -95,6 +104,7 @@ def test_missing_journal_keys_or_a_used_workdir_are_refused(rv, mod, tmp_path, c
     (tmp_path / "work" / "x").write_text("x")
     assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3  # 作業ディレクトリが空でない
     (tmp_path / "work" / "x").unlink()
+    (tmp_path / "work").chmod(0o700)
     monkeypatch.delenv("WARILINK_DELETION_JOURNAL")
     assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
     assert "削除ジャーナル" in json.loads((tmp_path / "receipt.json").read_text())["reason"]
@@ -142,8 +152,13 @@ def test_execute_fails_closed_at_each_step(rv, mod, tmp_path, capsys, monkeypatc
     assert [s["status"] for s in out["steps"]] == ["PASS", "FAIL"] and rv.restores == []
     remote.write_bytes(original)
     # 3. 復元の検査が失敗 → FAIL。隔離した復元先は消す
-    monkeypatch.setattr(mod, "cmd_restore", lambda ns: print(json.dumps(
-        {"restored": False, "checks": {"deletions_hold": False}, "journal": {"status": "verified"}})) or 1)
+    def failed_restore(ns):
+        ns.on_database_created()
+        print(json.dumps({"restored": False, "checks": {"deletions_hold": False},
+                          "journal": {"status": "verified"}}))
+        return 1
+
+    monkeypatch.setattr(mod, "cmd_restore", failed_restore)
     assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
     out = json.loads((tmp_path / "receipt.json").read_text())
     assert out["result"] == "FAIL" and out["steps"][-1]["name"] == "restore_and_reapply"
@@ -162,3 +177,163 @@ def test_tombstones_from_the_journal_use_the_finalize_time(rv, tmp_path):
     fin = next(r["at"] for r in st.records if r["type"] == "finalize")
     assert rows == [{"kind": "identity", "target_id": str(uuid.UUID(int=1)), "op_id": str(a), "created_at": fin},
                     {"kind": "destination", "target_id": str(uuid.UUID(int=2)), "op_id": str(a), "created_at": fin}]
+
+
+@pytest.mark.parametrize("created", [False, True])
+def test_restore_exception_drops_only_after_creation(rv, mod, tmp_path, capsys, monkeypatch, created):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+
+    def failed_restore(ns):
+        if created:
+            ns.on_database_created()
+        raise RuntimeError("failure")
+
+    monkeypatch.setattr(mod, "cmd_restore", failed_restore)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
+    assert rv.drops == (["warilink_restore_verify_t"] if created else [])
+    assert not (tmp_path / "work").exists()
+
+
+def test_symlink_workdir_is_refused(rv, mod, tmp_path, capsys):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "keep").write_text("untouched")
+    (tmp_path / "work").symlink_to(existing, target_is_directory=True)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert (existing / "keep").read_text() == "untouched"
+
+
+def test_workdir_cleanup_failure_is_failure(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    def fail(_):
+        raise OSError("cannot remove")
+    monkeypatch.setattr(rv.shutil, "rmtree", fail)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
+    assert json.loads((tmp_path / "receipt.json").read_text())["result"] == "FAIL"
+
+
+def test_drop_failure_is_failure(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    monkeypatch.setattr(mod, "cmd_drop", lambda ns: 1)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
+    assert "drop failed" in json.loads((tmp_path / "receipt.json").read_text())["cleanup"]
+
+
+def test_keep_preserves_db_and_workdir(rv, mod, tmp_path, capsys):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    assert rv.main(_args(tmp_path, report) + ["--execute", "--keep"], provider=kms) == 0
+    assert rv.drops == [] and (tmp_path / "work").is_dir()
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_existing_empty_owned_workdir(rv, mod, tmp_path, capsys, keep):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    assert rv.main(_args(tmp_path, report) + ["--execute"] + (["--keep"] if keep else []), provider=kms) == 0
+    assert work.exists() is keep
+    assert rv.drops == ([] if keep else ["warilink_restore_verify_t"])
+
+
+def test_existing_unsafe_workdir_is_refused(rv, mod, tmp_path, capsys):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o755)
+    work.chmod(0o755)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert work.exists() and not rv.drops and not rv.restores
+
+
+def test_existing_workdir_owned_by_other_user_is_refused(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    work = tmp_path / "work"
+    work.mkdir(mode=0o700)
+    real_owner = work.stat().st_uid
+    monkeypatch.setattr(rv.os, "geteuid", lambda: real_owner + 1)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert work.exists() and not rv.drops and not rv.restores
+
+
+def test_signal_after_creation_runs_cleanup(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    def interrupted(ns):
+        ns.on_database_created()
+        os.kill(os.getpid(), signal.SIGTERM)
+    monkeypatch.setattr(mod, "cmd_restore", interrupted)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
+    assert rv.drops == ["warilink_restore_verify_t"] and not (tmp_path / "work").exists()
+
+
+def test_bad_restore_json_still_cleans_up(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    def bad_json(ns):
+        ns.on_database_created()
+        print("{broken")
+        return 0
+    monkeypatch.setattr(mod, "cmd_restore", bad_json)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 1
+    assert rv.drops == ["warilink_restore_verify_t"] and not (tmp_path / "work").exists()
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_direct_cli_uses_verified_id(rv, mod, tmp_path, capsys, monkeypatch, keep):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    monkeypatch.delenv("WARILINK_RESTORE_CONTAINER_ID")
+    monkeypatch.delenv("WARILINK_RESTORE_RUN_ID")
+    monkeypatch.setattr(rv.service, "resolve_owned", rv.real_resolve_owned)
+    monkeypatch.setattr(rv.service, "inspect_owned", rv.real_inspect_owned)
+    calls = []
+    def docker(*args, **kwargs):
+        calls.append(args)
+        return json.dumps([{"Id": "a" * 64, "Config": {"Labels": {
+            rv.service.OWNER: "monthly-restore", rv.service.RUN: "b" * 32}}}])
+    monkeypatch.setattr(rv.service, "docker", docker)
+    assert rv.main(_args(tmp_path, report) + ["--execute"] + (["--keep"] if keep else []), provider=kms) == 0
+    assert calls[0] == ("inspect", "warilink-drill-db")
+    assert all(call == ("inspect", "a" * 64) for call in calls[1:])
+    assert rv.restores[0].container == "a" * 64
+    assert rv.drops == ([] if keep else ["warilink_restore_verify_t"])
+    assert (tmp_path / "work").exists() is keep
+
+
+@pytest.mark.parametrize("invalid", ["label", "id", "run"])
+def test_direct_cli_refuses_unowned_container(rv, mod, tmp_path, capsys, monkeypatch, invalid):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    monkeypatch.delenv("WARILINK_RESTORE_CONTAINER_ID")
+    monkeypatch.delenv("WARILINK_RESTORE_RUN_ID")
+    monkeypatch.setattr(rv.service, "resolve_owned", rv.real_resolve_owned)
+    item = {"Id": "bad" if invalid == "id" else "a" * 64,
+            "Config": {"Labels": {rv.service.OWNER: "other" if invalid == "label" else "monthly-restore",
+                                   rv.service.RUN: "bad" if invalid == "run" else "b" * 32}}}
+    monkeypatch.setattr(rv.service, "docker", lambda *args, **kwargs: json.dumps([item]))
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert not rv.restores and not rv.drops and not mod.created
+
+
+def test_direct_cli_refuses_changed_id(rv, mod, tmp_path, capsys, monkeypatch):  # noqa: F811
+    kms = FakeKmsProvider()
+    report, _ = _backup(mod, tmp_path, capsys, kms)
+    monkeypatch.delenv("WARILINK_RESTORE_CONTAINER_ID")
+    monkeypatch.delenv("WARILINK_RESTORE_RUN_ID")
+    monkeypatch.setattr(rv.service, "resolve_owned", rv.real_resolve_owned)
+    monkeypatch.setattr(rv.service, "inspect_owned", rv.real_inspect_owned)
+    def docker(*args, **kwargs):
+        return json.dumps([{"Id": ("a" if args[1] == "warilink-drill-db" else "c") * 64,
+                            "Config": {"Labels": {rv.service.OWNER: "monthly-restore",
+                                                  rv.service.RUN: "b" * 32}}}])
+    monkeypatch.setattr(rv.service, "docker", docker)
+    assert rv.main(_args(tmp_path, report) + ["--execute"], provider=kms) == 3
+    assert not rv.restores and not rv.drops and not mod.created
