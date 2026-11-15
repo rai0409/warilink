@@ -140,10 +140,16 @@ def main():
                 child_stopped = True
             except Exception:
                 result = 1
-        if work_root is not None:
+        if not child_stopped:
+            result = 1
+            if work_root is not None:
+                work_cleanup = 'deferred: child termination unconfirmed'
+            if container_id:
+                cleanup = 'deferred: child termination unconfirmed'
+        elif work_root is not None:
             try:
                 info = work_root.lstat()
-                if (not child_stopped or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
                         or (info.st_dev, info.st_ino) != work_identity):
                     raise RuntimeError('workdir identity or child state unknown')
                 shutil.rmtree(work_root)
@@ -151,7 +157,7 @@ def main():
             except Exception:
                 work_cleanup = 'workdir cleanup failed'
                 result = 1
-        if container_id:
+        if container_id and child_stopped:
             try:
                 if inspect_owned(container_id, run_id) is None:
                     raise ValueError('container ownership mismatch')
@@ -166,6 +172,9 @@ def main():
                 receipt = {'tool': 'warilink_restore_verify', 'target_db': target}
             receipt['container_cleanup'] = cleanup
             receipt['workdir_cleanup'] = work_cleanup
+            if not child_stopped:
+                receipt['retained_resources'] = {'run_id': run_id, 'container_id': container_id,
+                                                 'workdir': str(work_root) if work_root is not None else None}
             if result:
                 receipt['result'] = 'FAIL'
             RECEIPT.write_text(json.dumps(receipt, ensure_ascii=False, indent=1) + '\n')

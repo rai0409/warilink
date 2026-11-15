@@ -130,6 +130,50 @@ def test_timeout_reaps_child_before_removing_workdir(runner, monkeypatch, tmp_pa
     assert not list(tmp_path.glob('drill-*'))
 
 
+def test_timeout_kill_and_wait_permit_cleanup(runner, monkeypatch, tmp_path):
+    module, state, calls = runner
+    events = []
+    class Child:
+        def __init__(self, cmd, **kwargs):
+            self.killed = False
+        def poll(self):
+            return None
+        def terminate(self):
+            events.append('terminate')
+        def kill(self):
+            events.append('kill')
+            self.killed = True
+        def wait(self, timeout):
+            events.append('wait')
+            if not self.killed:
+                raise subprocess.TimeoutExpired('restore', timeout)
+            return -9
+    monkeypatch.setattr(module.subprocess, 'Popen', Child)
+    assert module.main() == 1
+    assert events == ['wait', 'terminate', 'wait', 'kill', 'wait']
+    assert ('rm', '-f', '-v', state['id']) in calls
+    assert not list(tmp_path.glob('drill-*'))
+    receipt = json.loads(module.RECEIPT.read_text())
+    assert receipt['result'] == 'FAIL' and receipt['container_cleanup'] == 'removed owned container'
+
+
+def test_child_already_exited_before_cleanup(runner, monkeypatch, tmp_path):
+    module, state, calls = runner
+    class Child:
+        def __init__(self, cmd, **kwargs):
+            pass
+        def poll(self):
+            return 1
+        def wait(self, timeout):
+            if timeout == 14000:
+                raise subprocess.TimeoutExpired('restore', timeout)
+            return 1
+    monkeypatch.setattr(module.subprocess, 'Popen', Child)
+    assert module.main() == 1
+    assert ('rm', '-f', '-v', state['id']) in calls
+    assert not list(tmp_path.glob('drill-*'))
+
+
 def test_workdir_cleanup_failure_reports_failure(runner, monkeypatch):
     module, _, _ = runner
     def fail(path):
@@ -140,22 +184,36 @@ def test_workdir_cleanup_failure_reports_failure(runner, monkeypatch):
     assert receipt['result'] == 'FAIL' and receipt['workdir_cleanup'] == 'workdir cleanup failed'
 
 
-def test_running_child_prevents_workdir_removal(runner, monkeypatch, tmp_path):
-    module, _, _ = runner
+@pytest.mark.parametrize('failure', ['terminate', 'kill', 'wait'])
+def test_running_child_prevents_workdir_removal(runner, monkeypatch, tmp_path, failure):
+    module, state, calls = runner
+    removals = []
+    monkeypatch.setattr(module.shutil, 'rmtree', lambda path: removals.append(path))
     class StuckChild:
         def __init__(self, cmd, **kwargs):
             pass
         def poll(self):
             return None
         def terminate(self):
-            raise OSError('cannot terminate')
+            if failure == 'terminate':
+                raise OSError('cannot terminate')
+        def kill(self):
+            if failure == 'kill':
+                raise OSError('cannot kill')
         def wait(self, timeout):
             raise subprocess.TimeoutExpired('restore', timeout)
     monkeypatch.setattr(module.subprocess, 'Popen', StuckChild)
     assert module.main() == 1
+    assert not [call for call in calls if call[0] == 'rm']
+    assert not removals
     receipt = json.loads(module.RECEIPT.read_text())
-    assert receipt['result'] == 'FAIL' and receipt['workdir_cleanup'] == 'workdir cleanup failed'
-    assert len(list(tmp_path.glob('drill-*'))) == 1
+    assert receipt['result'] == 'FAIL'
+    assert receipt['workdir_cleanup'] == 'deferred: child termination unconfirmed'
+    assert receipt['container_cleanup'] == 'deferred: child termination unconfirmed'
+    paths = list(tmp_path.glob('drill-*'))
+    assert len(paths) == 1
+    assert receipt['retained_resources'] == {'run_id': state['run'], 'container_id': state['id'],
+                                             'workdir': str(paths[0])}
 
 
 def test_nonzero_child_cleans_owned_workdir(runner, tmp_path):

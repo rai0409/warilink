@@ -106,6 +106,8 @@
 残存候補は `docker ps -a --filter label=org.warilink.restore.owner=monthly-restore` で確認し、実行IDと完全IDを照合して
 運用者が個別に調査する。Docker inspect からコンテナの環境変数にあるDBパスワードを参照できるため、出力を記録・共有しない。
 ランナーは所有を確認したコンテナと匿名volume、および子プロセスの終了後に専用作業領域を削除する。
+子プロセスの停止を確認できない場合は両方のcleanupを保留し、receiptの `retained_resources` に実行ID、完全ID、
+作業領域パスを記録する。運用者は子プロセスの終了を確認し、記録と所有ラベル・パスを照合してから個別に対処する。
 SIGKILL、ホスト停止やDocker障害ではこれらが残ることがあるため、実行IDと完全IDを確認して調査する。
 直接CLIで実行するときも、専用コンテナに `org.warilink.restore.owner=monthly-restore` と
 `org.warilink.restore.run=<32桁の小文字16進乱数>` のラベルが必要。運用者は新規のPostgreSQL 18コンテナを
