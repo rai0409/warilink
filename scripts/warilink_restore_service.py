@@ -55,6 +55,9 @@ def main():
     name = f'warilink-drill-{run_id}'
     target = f'warilink_restore_{run_id}'
     container_id = None
+    candidate_id = None
+    creation_uncertain = False
+    creation_check = None
     result = 1
     cleanup = 'not created'
     work_cleanup = 'not created'
@@ -80,12 +83,14 @@ def main():
         info = work_root.lstat()
         work_identity = (info.st_dev, info.st_ino)
         env = dict(os.environ, POSTGRES_PASSWORD=password)
-        container_id = docker('run', '-d', '--name', name, '--label', f'{OWNER}=monthly-restore', '--label',
-                              f'{RUN}={run_id}', '-e', 'POSTGRES_USER=warilink', '-e', 'POSTGRES_PASSWORD',
-                              '-e', 'POSTGRES_DB=postgres', '-p', '127.0.0.1::5432', 'postgres:18-alpine', env=env)
-        if not re.fullmatch(r'[0-9a-f]{64}', container_id):
-            container_id = None
+        creation_uncertain = True
+        output = docker('run', '-d', '--name', name, '--label', f'{OWNER}=monthly-restore', '--label',
+                        f'{RUN}={run_id}', '-e', 'POSTGRES_USER=warilink', '-e', 'POSTGRES_PASSWORD',
+                        '-e', 'POSTGRES_DB=postgres', '-p', '127.0.0.1::5432', 'postgres:18-alpine', env=env)
+        if not isinstance(output, str) or not re.fullmatch(r'[0-9a-f]{64}', output):
             raise ValueError('invalid container id')
+        container_id = output
+        creation_uncertain = False
         item = inspect_owned(container_id, run_id)
         if item is None:
             raise ValueError('container ownership mismatch')
@@ -140,6 +145,22 @@ def main():
                 child_stopped = True
             except Exception:
                 result = 1
+        if creation_uncertain and child_stopped:
+            creation_check = 'unconfirmed'
+            cleanup = 'creation unconfirmed'
+            try:
+                item = json.loads(docker('inspect', name))[0]
+                found = item['Id']
+                labels = item['Config']['Labels'] or {}
+                if isinstance(found, str) and re.fullmatch(r'[0-9a-f]{64}', found):
+                    candidate_id = found
+                if (candidate_id is None or labels.get(OWNER) != 'monthly-restore' or labels.get(RUN) != run_id
+                        or inspect_owned(candidate_id, run_id) is None):
+                    raise ValueError('container ownership mismatch')
+                container_id = candidate_id
+                creation_check = 'owned container verified'
+            except Exception:
+                result = 1
         if not child_stopped:
             result = 1
             if work_root is not None:
@@ -172,6 +193,15 @@ def main():
                 receipt = {'tool': 'warilink_restore_verify', 'target_db': target}
             receipt['container_cleanup'] = cleanup
             receipt['workdir_cleanup'] = work_cleanup
+            if creation_uncertain:
+                receipt['creation_check'] = creation_check
+                if cleanup != 'removed owned container':
+                    receipt['retained_resources'] = {'run_id': run_id, 'container_name': name,
+                                                     'container_id': candidate_id,
+                                                     'confirmation': creation_check}
+            elif cleanup == 'container cleanup failed':
+                receipt['retained_resources'] = {'run_id': run_id, 'container_name': name,
+                                                 'container_id': container_id, 'confirmation': 'cleanup failed'}
             if not child_stopped:
                 receipt['retained_resources'] = {'run_id': run_id, 'container_id': container_id,
                                                  'workdir': str(work_root) if work_root is not None else None}

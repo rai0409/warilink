@@ -29,6 +29,8 @@ def runner(monkeypatch, tmp_path):
                 raise subprocess.CalledProcessError(1, args)
             return state['id']
         if args[0] == 'inspect':
+            if state['fail_run']:
+                raise subprocess.CalledProcessError(1, args)
             return json.dumps([{'Id': state['inspect_id'], 'Config': {'Labels': {
                 module.OWNER: 'monthly-restore' if state['label'] else 'other', module.RUN: state['run']}},
                 'NetworkSettings': {'Ports': {'5432/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '43210'}]}}}])
@@ -91,7 +93,70 @@ def test_failure_does_not_delete_unowned_or_report_success(runner, failure):
         assert removed == []
     else:
         assert removed == [('rm', '-f', '-v', state['id'])]
+    receipt = json.loads(module.RECEIPT.read_text())
+    assert receipt['result'] == 'FAIL'
+    if failure == 'fail_run':
+        assert receipt['container_cleanup'] == 'creation unconfirmed'
+        assert receipt['retained_resources']['confirmation'] == 'unconfirmed'
+
+
+@pytest.mark.parametrize('failure', ['error', 'timeout', 'invalid_output'])
+def test_creation_ambiguous_recovers_only_verified_id(runner, monkeypatch, failure):
+    module, state, calls = runner
+    original = module.docker
+    def docker(*args, **kwargs):
+        out = original(*args, **kwargs)
+        if args[0] == 'run':
+            if failure == 'error':
+                raise subprocess.CalledProcessError(1, args)
+            if failure == 'timeout':
+                raise subprocess.TimeoutExpired(args, 20)
+            return 'truncated'
+        return out
+    monkeypatch.setattr(module, 'docker', docker)
+    assert module.main() == 1
+    assert [x for x in calls if x[0] == 'rm'] == [('rm', '-f', '-v', state['id'])]
     assert json.loads(module.RECEIPT.read_text())['result'] == 'FAIL'
+
+
+@pytest.mark.parametrize('failure', ['owner', 'run_id', 'id_mismatch', 'inspect_error', 'remove_error'])
+@pytest.mark.parametrize('creation_result', ['error', 'invalid_output'])
+def test_creation_ambiguous_refuses_unverified_cleanup(runner, monkeypatch, failure, creation_result):
+    module, state, calls = runner
+    original = module.docker
+    def docker(*args, **kwargs):
+        if args[0] == 'run':
+            original(*args, **kwargs)
+            if creation_result == 'error':
+                raise subprocess.CalledProcessError(1, args)
+            return 'truncated'
+        if args[0] == 'inspect' and failure == 'inspect_error':
+            calls.append(args)
+            raise subprocess.TimeoutExpired(args, 20)
+        if args[0] == 'rm' and failure == 'remove_error':
+            calls.append(args)
+            raise subprocess.CalledProcessError(1, args)
+        out = original(*args, **kwargs)
+        if args[0] == 'inspect':
+            item = json.loads(out)[0]
+            if failure == 'owner':
+                item['Config']['Labels'][module.OWNER] = 'unrelated'
+            if failure == 'run_id':
+                item['Config']['Labels'][module.RUN] = 'b' * 32
+            if failure == 'id_mismatch' and args[1] == state['id']:
+                item['Id'] = 'b' * 64
+            return json.dumps([item])
+        return out
+    monkeypatch.setattr(module, 'docker', docker)
+    assert module.main() == 1
+    removed = [x for x in calls if x[0] == 'rm']
+    assert removed == ([('rm', '-f', '-v', state['id'])] if failure == 'remove_error' else [])
+    receipt = json.loads(module.RECEIPT.read_text())
+    assert receipt['result'] == 'FAIL'
+    retained = receipt['retained_resources']
+    assert retained['run_id'] == state['run'] and retained['container_name'] == 'warilink-drill-' + state['run']
+    assert retained['confirmation'] == ('owned container verified' if failure == 'remove_error' else 'unconfirmed')
+    assert retained['container_id'] == (None if failure == 'inspect_error' else state['id'])
 
 
 def test_timeout_reaps_child_before_removing_workdir(runner, monkeypatch, tmp_path):
