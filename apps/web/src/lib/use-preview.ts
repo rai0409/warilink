@@ -1,44 +1,47 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage, type ExpenseBody, type ExpensePreview } from "@/lib/api";
 
-/**
- * 入力が変わるたびにサーバーで負担額を計算する(250ms デバウンス)。
- * 画面側では金額を計算しない。古い応答が新しい応答を上書きしないよう破棄する。
- */
+/** サーバーで負担額を計算する。入力や再試行ごとに結果を区別する。 */
 export function useExpensePreview(publicId: string, body: ExpenseBody | null, expenseId: string) {
-  const [preview, setPreview] = useState<ExpensePreview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const identity = JSON.stringify([publicId, expenseId, body]);
+  // 同じ入力に戻った場合も、新しい token で前の成功結果と区別する。
+  const request = useMemo(() => ({ identity, attempt }), [identity, attempt]);
+  const [result, setResult] = useState<{
+    request: typeof request;
+    preview: ExpensePreview | null;
+    error: string | null;
+  } | null>(null);
 
   useEffect(() => {
-    if (!body) {
-      setPreview(null);
-      setPending(false);
-      return;
-    }
+    const [group, id, requestBody] = JSON.parse(request.identity) as [string, string, ExpenseBody | null];
+    if (!requestBody) return;
     let cancelled = false;
-    setPending(true);
     const t = setTimeout(() => {
-      api<ExpensePreview>(`/groups/${publicId}/expenses/preview`, {
+      api<ExpensePreview>(`/groups/${group}/expenses/preview`, {
         method: "POST",
-        body: { ...body, expense_id: expenseId },
+        body: { ...requestBody, expense_id: id },
       })
-        .then((p) => {
-          if (cancelled) return;
-          setPreview(p);
-          setError(null);
+        .then((preview) => {
+          if (!cancelled) setResult({ request, preview, error: null });
         })
-        .catch((e) => !cancelled && setError(errorMessage(e)))
-        .finally(() => !cancelled && setPending(false));
+        .catch((e) => {
+          if (!cancelled) setResult({ request, preview: null, error: errorMessage(e) });
+        });
     }, 250);
     return () => {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [body, publicId, expenseId]);
+  }, [request]);
 
-  // pending の間は表示中のプレビューが古い可能性があるため、呼び出し側で確定ボタンを無効にする
-  return { preview, error, pending };
+  const current = body && result?.request === request ? result : null;
+  return {
+    preview: current?.preview ?? null,
+    error: current?.error ?? null,
+    pending: Boolean(body && !current),
+    retry: () => setAttempt((n) => n + 1),
+  };
 }

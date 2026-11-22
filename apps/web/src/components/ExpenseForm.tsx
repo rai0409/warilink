@@ -135,11 +135,12 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
     };
   }, [amount, title, members, selected, mode, values, payers, multiPayer, myMemberId, category, occurredOn]);
 
-  const { preview, error: previewError, pending } = useExpensePreview(publicId, body, expenseId);
+  const { preview, error: previewError, pending, retry } = useExpensePreview(publicId, body, expenseId);
   const bd = preview?.breakdown;
+  const canSave = Boolean(body && bd?.ok && !pending && !busy && !previewError);
 
   async function save() {
-    if (!body) return;
+    if (!body || !canSave) return;
     setBusy(true);
     setSaveError(null);
     try {
@@ -235,7 +236,7 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
             )}
           </div>
         )}
-        {previewError && <ErrorText>{previewError}</ErrorText>}
+        {previewError && <><ErrorText>{previewError}</ErrorText><TextButton onClick={retry}>再試行</TextButton></>}
         {saveError && <ErrorText>{saveError}</ErrorText>}
         {editing && <Muted className="mt-4">保存すると変更前の内容は履歴に残ります。</Muted>}
       </Body>
@@ -248,7 +249,7 @@ export function ExpenseForm({ publicId, members, myMemberId, editing, onSaved, b
             <TextButton className="w-full justify-center" onClick={() => setConflict(false)}>編集中の内容</TextButton>
           </div>
         ) : (
-          <PrimaryButton disabled={!bd?.ok || pending || busy} onClick={save}>
+          <PrimaryButton disabled={!canSave} onClick={save}>
             {editing ? "変更を保存" : "この内容で登録"}
           </PrimaryButton>
         )}
