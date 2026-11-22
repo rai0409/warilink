@@ -22,3 +22,5 @@ test-results/
 var/
 
 *.tsbuildinfo
+
+/apps/web/next-env.d.ts
