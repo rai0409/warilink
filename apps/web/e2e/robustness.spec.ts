@@ -192,3 +192,161 @@ test("入力を元に戻しても新しいプレビューの成功まで保存�
   await expect(preview).toContainText("¥500");
   await expect(save).toBeEnabled();
 });
+
+// グループ切替と再取得は実際の画面操作を使い、必要な応答だけ制御する。
+test("ホームのリンクでグループを切り替えると情報が混在しない", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "切替グループA", "アサギ");
+  const homeA = new URL(page.url()).pathname;
+  await createGroup(page, "切替グループB", "ベニ");
+  const homeB = new URL(page.url()).pathname;
+  await page.getByRole("link", { name: "戻る" }).click();
+  await page.getByRole("list", { name: "最近のグループ" }).getByRole("link", { name: /切替グループA/ }).click();
+  await expect(page.getByRole("heading", { name: "切替グループA" })).toBeVisible();
+  await page.getByRole("link", { name: "戻る" }).click();
+  await page.getByRole("list", { name: "最近のグループ" }).getByRole("link", { name: /切替グループB/ }).click();
+  await expect(page.getByRole("heading", { name: "切替グループB" })).toBeVisible();
+  await expect(page.getByText("切替グループA")).toHaveCount(0);
+  await expect(page.locator(`a[href^="${homeA}/"]`)).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /^メンバー/ })).toHaveAttribute("href", `${homeB}/members`);
+  await expect(page.getByRole("link", { name: "支出を追加" })).toHaveAttribute("href", `${homeB}/expenses/new`);
+  await openTab(page, "メンバー");
+  await expect(page.getByRole("list", { name: "メンバー一覧" })).toContainText("ベニ");
+  await expect(page.getByText("アサギ")).toHaveCount(0);
+});
+
+test("切替後に古いグループ取得が完了しても表示を上書きしない", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "遅延グループA", "アサギ");
+  const homeA = new URL(page.url()).pathname;
+  await createGroup(page, "遅延グループB", "ベニ");
+  await page.getByRole("link", { name: "戻る" }).click();
+  let release!: () => void;
+  let received!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const requested = new Promise<void>((resolve) => { received = resolve; });
+  const pending: Promise<void>[] = [];
+  await page.route(`**/api/v1/groups/${homeA.split("/").pop()}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    let done!: () => void;
+    pending.push(new Promise<void>((resolve) => { done = resolve; }));
+    try {
+      const response = await route.fetch();
+      received();
+      await held;
+      await route.fulfill({ response });
+    } finally { done(); }
+  });
+  try {
+    await page.getByRole("list", { name: "最近のグループ" }).getByRole("link", { name: /遅延グループA/ }).click();
+    await requested;
+    await page.getByRole("link", { name: "戻る" }).click();
+    await page.getByRole("list", { name: "最近のグループ" }).getByRole("link", { name: /遅延グループB/ }).click();
+    await expect(page.getByRole("heading", { name: "遅延グループB" })).toBeVisible();
+    release();
+    await Promise.all(pending);
+    await expect(page.getByRole("heading", { name: "遅延グループB" })).toBeVisible();
+    await expect(page.getByText("遅延グループA")).toHaveCount(0);
+    await openTab(page, "メンバー");
+    await expect(page.getByRole("list", { name: "メンバー一覧" })).toContainText("ベニ");
+    await expect(page.getByText("アサギ")).toHaveCount(0);
+  } finally { release(); await Promise.all(pending); }
+});
+
+test("応答のグループIDが不一致なら遮断し再試行で復旧する", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "ID照合", "メンバーX");
+  const id = new URL(page.url()).pathname.split("/").pop();
+  let mismatch = true;
+  let intercepted = 0;
+  await page.route(`**/api/v1/groups/${id}`, async (route) => {
+    if (route.request().method() !== "GET" || !mismatch) return route.continue();
+    intercepted++;
+    const response = await route.fetch();
+    const group = await response.json();
+    await route.fulfill({ response, json: { ...group, public_id: "different-id" } });
+  });
+  await page.reload();
+  await expect.poll(() => intercepted).toBeGreaterThan(0);
+  await expect(page.locator('p[role="alert"]')).toBeVisible();
+  await expect(page.getByRole("heading", { name: "ID照合" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "支出を追加" })).toHaveCount(0);
+  mismatch = false;
+  await page.getByRole("button", { name: "再試行" }).click();
+  await expect(page.getByRole("heading", { name: "ID照合" })).toBeVisible();
+});
+
+test("メンバー更新後の再取得失敗は古い情報を遮断し再試行で復旧する", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "再取得失敗", "更新前");
+  const id = new URL(page.url()).pathname.split("/").pop();
+  await openTab(page, "メンバー");
+  let fail = true;
+  await page.route(`**/api/v1/groups/${id}`, async (route) => {
+    if (route.request().method() === "GET" && fail) await route.abort("failed");
+    else await route.continue();
+  });
+  await page.getByRole("button", { name: "メンバーを追加" }).click();
+  await page.getByLabel("名前", { exact: true }).fill("追加後");
+  await page.getByRole("button", { name: "追加する" }).click();
+  await expect(page.locator('p[role="alert"]')).toContainText("通信に失敗しました");
+  await expect(page.getByRole("list", { name: "メンバー一覧" })).toHaveCount(0);
+  await expect(page.getByText("更新前")).toHaveCount(0);
+  fail = false;
+  await page.getByRole("button", { name: "再試行" }).click();
+  await expect(page.getByRole("list", { name: "メンバー一覧" })).toContainText("追加後");
+});
+
+test("同一グループの古い再取得が後から完了しても最新のメンバーを維持する", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "再取得順序", "最初");
+  const id = new URL(page.url()).pathname.split("/").pop();
+  await openTab(page, "メンバー");
+  let release!: () => void;
+  let received!: (names: string[]) => void;
+  let done!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const requested = new Promise<string[]>((resolve) => { received = resolve; });
+  const completed = new Promise<void>((resolve) => { done = resolve; });
+  let first = true;
+  await page.route(`**/api/v1/groups/${id}`, async (route) => {
+    if (route.request().method() !== "GET" || !first) return route.continue();
+    first = false;
+    try {
+      const response = await route.fetch();
+      const group = await response.json();
+      received(group.members.map((member: { display_name: string }) => member.display_name));
+      await held;
+      await route.fulfill({ response });
+    } finally { done(); }
+  });
+  try {
+    await page.getByRole("button", { name: "メンバーを追加" }).click();
+    await page.getByLabel("名前", { exact: true }).fill("一回目");
+    await page.getByRole("button", { name: "追加する" }).click();
+    const oldNames = await requested;
+    expect(oldNames).toContain("一回目");
+    expect(oldNames).not.toContain("二回目");
+    await page.getByRole("button", { name: "メンバーを追加" }).click();
+    await page.getByLabel("名前", { exact: true }).fill("二回目");
+    await page.getByRole("button", { name: "追加する" }).click();
+    const members = page.getByRole("list", { name: "メンバー一覧" });
+    await expect(members).toContainText("一回目");
+    await expect(members).toContainText("二回目");
+    release();
+    await completed;
+    await expect(members).toContainText("一回目");
+    await expect(members).toContainText("二回目");
+  } finally { release(); if (!first) await completed; }
+});
+
+test("正常な再取得で終了操作の成功メッセージが維持される", async ({ browser, baseURL }) => {
+  const page = await newUser(browser, { baseURL });
+  await createGroup(page, "終了時の状態", "");
+  await openTab(page, "グループ設定");
+  await page.getByRole("button", { name: /グループを終了する/ }).click();
+  await page.getByRole("button", { name: "終了する", exact: true }).click();
+  await expect(page.getByText("このグループは終了しています。閲覧だけできます。")).toBeVisible();
+  await expect(page.getByText("グループを終了しました(閲覧のみ)")).toBeVisible();
+  await expect(page.getByRole("button", { name: /グループを終了する/ })).toHaveCount(0);
+});
