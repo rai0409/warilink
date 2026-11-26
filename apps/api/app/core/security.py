@@ -260,7 +260,14 @@ def _key(kind: str, value: str) -> str:
 
 
 def rate_limit_keys(request: Request, *, identity: Identity | None = None, token: str | None = None) -> dict[str, str]:
-    keys = {"ip": _key("ip", _ip_unit(client_ip(request))), "global": "global"}
+    if get_settings().rate_limit_source == "iap":
+        subject = getattr(request.state, "iap_subject", None)
+        if not isinstance(subject, str) or not subject:
+            raise ApiError(401, "UNAUTHENTICATED", "認証を確認できませんでした")
+        ip_key = _key("iap", subject)
+    else:
+        ip_key = _key("ip", _ip_unit(client_ip(request)))
+    keys = {"ip": ip_key, "global": "global"}
     if identity is not None:
         keys["identity"] = _key("identity", str(identity.id))
     if token is not None:

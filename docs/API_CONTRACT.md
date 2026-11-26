@@ -301,3 +301,10 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | Method | Path | 用途 | 権限 |
 |---|---|---|---|
 | GET | `/retention` | データの種類ごとの保存期間(方針=設定値)`policies[{key, days}]` と、期限を過ぎたデータを消す処理の実績 `automatic_deletion{status: verified\|unverified, last_success_at, last_failure_at, max_age_hours}`、`backup_encrypted_offsite`。`verified` は削除ジョブ(`purge-images`)が直近 48 時間以内に成功した記録があるときだけ。方針の日数だけでは削除されたことにしない | 誰でも(個人情報を含まない) |
+
+### IAP モードの入口エラー
+
+`WARILINK_RATE_LIMIT_SOURCE=iap` の場合、`GET /api/v1/health` 以外は検証済みの IAP 署名付き
+アサーションが必要です。不正・未指定は Problem Details の `401 UNAUTHENTICATED`、公開鍵を
+取得できず検証できない場合は `503 IAP_UNAVAILABLE` を返します。IAP 認証は WariLink の
+セッション、CSRF、グループの権限確認に代わるものではありません。既定の `ip` モードは従来どおりです。

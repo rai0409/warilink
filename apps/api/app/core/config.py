@@ -1,4 +1,5 @@
 import ipaddress
+import re
 from functools import lru_cache
 from urllib.parse import urlsplit
 
@@ -101,6 +102,8 @@ class Settings(BaseSettings):
     # None = 本番だけ有効(開発・E2E は全員が 127.0.0.1 から来るため既定で無効。API テストは明示的に有効化して検証する)
     rate_limits_enabled: bool | None = None
     rate_limit_secret: str | None = None  # 本番は 32 文字以上が必須
+    rate_limit_source: str = "ip"  # ip | iap
+    iap_audience: str | None = None
     trusted_proxies: list[str] = []  # X-Forwarded-For を信頼する中継(IP / CIDR)。本番では Web(Next)の中継が必須
     rate_limit_overrides: dict[str, tuple[int, int]] = {}  # {"guest_create:ip": [上限回数, 期間の秒数]}
 
@@ -122,6 +125,24 @@ class Settings(BaseSettings):
 
 # 本番で受け付ける回数制限の範囲(誤設定で制限が実質無効になる・正常利用を止めることを防ぐ)
 RATE_LIMIT_BOUNDS = {"limit": (1, 10_000), "window": (10, 86_400)}
+
+
+def iap_problems(s: "Settings") -> list[str]:
+    out = []
+    if s.rate_limit_source not in ("ip", "iap"):
+        out.append("WARILINK_RATE_LIMIT_SOURCE は ip または iap にしてください")
+    elif s.rate_limit_source == "iap":
+        if not s.iap_audience or not re.fullmatch(
+            r"/projects/[0-9]+/locations/[a-z][a-z0-9-]*/services/[a-z][a-z0-9-]*", s.iap_audience
+        ):
+            out.append("WARILINK_IAP_AUDIENCE に Cloud Run の audience を指定してください")
+        if not s.rate_limits_active:
+            out.append("IAP モードでは回数制限を有効にしてください")
+        if not s.rate_limit_secret or len(s.rate_limit_secret) < 32:
+            out.append("IAP モードでは回数制限の秘密鍵を 32 文字以上にしてください")
+    elif s.iap_audience is not None:
+        out.append("ip モードでは WARILINK_IAP_AUDIENCE を指定できません")
+    return out
 
 
 def rate_limit_problems(s: "Settings") -> list[str]:
@@ -197,7 +218,7 @@ def operations_problems(s: "Settings") -> list[str]:
 
 def production_problems(s: "Settings") -> list[str]:
     """本番(environment=production)で拒否する設定の一覧。値そのもの(秘密)はメッセージに含めない。"""
-    out: list[str] = []
+    out: list[str] = iap_problems(s)
     if not s.cookie_secure:
         out.append("WARILINK_COOKIE_SECURE を true にしてください")
     if not s.allowed_origins:
@@ -242,6 +263,10 @@ def ensure_safe(s: Settings) -> Settings:
         problems = production_problems(s)
         if problems:
             raise UnsafeProductionConfig("本番の設定が安全ではないため起動を中止します: " + " / ".join(problems))
+    else:
+        problems = iap_problems(s)
+        if problems:
+            raise UnsafeProductionConfig("設定が安全ではないため起動を中止します: " + " / ".join(problems))
     return s
 
 

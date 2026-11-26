@@ -1,7 +1,8 @@
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core import errors
+from app.core import errors, iap
 from app.core.config import get_settings
 from app.core.security import RateLimited
 from app.modules.expenses.router import router as expenses_router
@@ -30,7 +31,24 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def private_headers(request: Request, call_next):
-        response = await call_next(request)
+        health = request.method == "GET" and request.url.path == f"{API_PREFIX}/health"
+        if s.rate_limit_source == "iap" and not health:
+            assertions = request.headers.getlist("x-goog-iap-jwt-assertion")
+            if len(assertions) != 1:
+                response = errors._problem(request, 401, "UNAUTHENTICATED", "認証を確認できませんでした")
+            else:
+                try:
+                    request.state.iap_subject = await anyio.to_thread.run_sync(
+                        iap.verify_assertion, assertions[0], s.iap_audience or ""
+                    )
+                    response = await call_next(request)
+                except iap.InvalidAssertion:
+                    response = errors._problem(request, 401, "UNAUTHENTICATED", "認証を確認できませんでした")
+                except iap.IapUnavailable:
+                    response = errors._problem(request, 503, "IAP_UNAVAILABLE",
+                                               "認証を確認できません。時間をおいて再試行してください")
+        else:
+            response = await call_next(request)
         # グループ・支出・精算は非公開。検索エンジン・共有キャッシュに載せない。
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
