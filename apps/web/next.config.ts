@@ -18,7 +18,8 @@ const nextConfig: NextConfig = {
     const noindex = [{ key: "X-Robots-Tag", value: "noindex, nofollow" }];
     return [
       { source: "/g/:path*", headers: noindex },
-      { source: "/join/:path*", headers: noindex },
+      { source: "/join/:path*", headers: [...noindex, { key: "Cache-Control", value: "no-store" },
+        { key: "Referrer-Policy", value: "no-referrer" }] },
     ];
   },
 };

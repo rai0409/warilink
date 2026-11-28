@@ -396,27 +396,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/invites/{token}": {
+    "/api/v1/invites/preview": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+        get?: never;
+        put?: never;
         /**
          * Preview Invite
          * @description 参加前の確認。グループ名と、まだ誰も紐付けていない名前だけを返す(金額は返さない)。
          */
-        get: operations["preview_invite_api_v1_invites__token__get"];
-        put?: never;
-        post?: never;
+        post: operations["preview_invite_api_v1_invites_preview_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/invites/{token}/join": {
+    "/api/v1/invites/join": {
         parameters: {
             query?: never;
             header?: never;
@@ -426,7 +426,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Join */
-        post: operations["join_api_v1_invites__token__join_post"];
+        post: operations["join_api_v1_invites_join_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1425,6 +1425,11 @@ export interface components {
             /** Expires At */
             expires_at: string | null;
         };
+        /** InviteToken */
+        InviteToken: {
+            /** Token */
+            token: string;
+        };
         /** IssueOut */
         IssueOut: {
             /** Code */
@@ -1467,6 +1472,8 @@ export interface components {
         };
         /** JoinRequest */
         JoinRequest: {
+            /** Token */
+            token: string;
             /** Claim Member Id */
             claim_member_id?: string | null;
             /** New Member Name */
@@ -2612,16 +2619,18 @@ export interface operations {
             };
         };
     };
-    preview_invite_api_v1_invites__token__get: {
+    preview_invite_api_v1_invites_preview_post: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                token: string;
-            };
+            path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteToken"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2643,13 +2652,11 @@ export interface operations {
             };
         };
     };
-    join_api_v1_invites__token__join_post: {
+    join_api_v1_invites_join_post: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                token: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {

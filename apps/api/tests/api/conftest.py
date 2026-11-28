@@ -131,9 +131,9 @@ def make_group(owner: User, names=("Bさん", "Cさん", "Dさん"), title="旅�
 
 def join_as(user: User, owner: User, public_id: str, claim_name: str):
     inv = owner.post(f"/groups/{public_id}/invites", json={}).json()
-    preview = user.get(f"/invites/{inv['token']}").json()
+    preview = user.post("/invites/preview", json={"token": inv['token']}).json()
     mid = next(m["id"] for m in preview["unclaimed_members"] if m["display_name"] == claim_name)
-    r = user.post(f"/invites/{inv['token']}/join", json={"claim_member_id": mid})
+    r = user.post("/invites/join", json={"token": inv['token'], "claim_member_id": mid})
     assert r.status_code == 200, r.text
     return r.json()
 

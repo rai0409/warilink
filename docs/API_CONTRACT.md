@@ -14,7 +14,7 @@ Base `/api/v1`, JSON, OpenAPI仕様をFastAPIから生成しTypeScriptクライ�
 | POST | `/groups` | グループ作成 | guest+ |
 | GET | `/groups/{public_id}` | group view | membership or scoped capability |
 | POST | `/groups/{public_id}/invites` | 期限付きinvite発行 | owner |
-| POST | `/invites/{token}/join` | invite参加 | valid+unused link |
+| POST | `/invites/join` | invite参加 | valid+unused link |
 | GET | `/groups/{public_id}/members` | メンバー取得 | member |
 
 ## 2. 支出・レシート
@@ -128,8 +128,8 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 | GET | `/groups/{public_id}` | 概要・メンバー | member(非メンバー404) |
 | POST | `/groups/{public_id}/members` | 名前だけのメンバー追加 | member |
 | POST | `/groups/{public_id}/invites` | 招待トークン発行(生値は一度だけ返す) | owner(member は 403) |
-| GET | `/invites/{token}` | 参加前確認(グループ名・未紐付けの名前のみ) | guest+ |
-| POST | `/invites/{token}/join` | 名前を選んで/新規で参加。同じ名前の同時選択は1人だけ成功(409) | guest+ |
+| POST | `/invites/preview` | 参加前確認(グループ名・未紐付けの名前のみ) | guest+ |
+| POST | `/invites/join` | 名前を選んで/新規で参加。同じ名前の同時選択は1人だけ成功(409) | guest+ |
 | POST | `/groups/{public_id}/invites/revoke` | 有効な招待をすべて失効(STEP4)。`{revoked}` を返す。参加済みのメンバーはそのまま | owner(member は 403、他は 404) |
 | POST | `/groups/{public_id}/leave` | グループから抜ける(STEP4)。204。メンバー行は名前だけ残し本人との結び付きを外す。以後 404。作成者が抜けると参加の早い参加者へ自動で引き継ぎ、誰もいなければ参加者不在(30 日後に削除) | member |
 | POST | `/groups/{public_id}/owner` | 作成者を参加済みの別のメンバーへ引き継ぐ `{member_id}`(STEP4)。未参加・自分は 422 | owner(他は 403) |
@@ -234,7 +234,7 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
   `PASSKEY_VERIFICATION_FAILED`(400、署名・Origin・RP ID・ユーザー検証・署名回数・未登録の Passkey。どれが原因かは返さない)、
   `PASSKEY_ALREADY_REGISTERED`(409)。
 - 終了したグループへの支出・精算・メンバー・招待・参加の変更は `409 GROUP_CLOSED`(STEP4)。`GroupOut` に `closed`(bool)を追加(既存キーは不変)。
-- 回数制限(STEP3): `POST /identity/guest`(新規作成のときだけ)、`POST /groups/{id}/invites`、`GET /invites/{token}`、`POST /invites/{token}/join`、`/auth/passkeys/register/*`、`/auth/passkeys/login/*` は、上限を超えると `429 RATE_LIMITED`。`Retry-After` ヘッダーと本文の `retry_after_seconds` に次に試せるまでの秒数を返す(`docs/SECURITY_PRIVACY.md` §2.3.1)。
+- 回数制限(STEP3): `POST /identity/guest`(新規作成のときだけ)、`POST /groups/{id}/invites`、`POST /invites/preview`、`POST /invites/join`、`/auth/passkeys/register/*`、`/auth/passkeys/login/*` は、上限を超えると `429 RATE_LIMITED`。`Retry-After` ヘッダーと本文の `retry_after_seconds` に次に試せるまでの秒数を返す(`docs/SECURITY_PRIVACY.md` §2.3.1)。
 
 
 ### P08 追加(2026-10-20): 振込先(登録済みの本人のみ)
@@ -308,3 +308,5 @@ OpenAPI: `GET /api/v1/openapi.json`(TS型は `packages/contracts` に生成)。�
 アサーションが必要です。不正・未指定は Problem Details の `401 UNAUTHENTICATED`、公開鍵を
 取得できず検証できない場合は `503 IAP_UNAVAILABLE` を返します。IAP 認証は WariLink の
 セッション、CSRF、グループの権限確認に代わるものではありません。既定の `ip` モードは従来どおりです。
+
+招待確認・参加は固定 path に JSON の `token` を送る。参加は `claim_member_id` または `new_member_name` を併送する。旧 token 付き API は廃止した。

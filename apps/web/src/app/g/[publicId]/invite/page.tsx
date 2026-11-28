@@ -36,7 +36,7 @@ export default function InvitePage() {
     setError(null);
     try {
       const inv = await api<{ token: string }>(`/groups/${pid}/invites`, { method: "POST", body: {} });
-      const u = `${location.origin}/join/${inv.token}`;
+      const u = `${location.origin}/join#token=${encodeURIComponent(inv.token)}`;
       saveInviteUrl(pid, u);
       setUrl(u);
       setStatus({ active: true, expires_at: null });

@@ -245,3 +245,5 @@
 招待 token の scope は従来どおりです。JWT、subject、メールアドレスは保存しません。IAP は
 WariLink のログインやグループ認可には代わりません。既存の運用 DB を ip/iap 間で切り替える際の
 制限枠移行は未対応であり、実運用への無断切替は禁止します。Cloud Run での伝播・IAM・ログは未検証です。
+
+招待 URL は `/join#token=…` とし、受取側は fragment を読み取って履歴から消し、固定 API の JSON 本文で送る。旧 URL は直接開かず参加画面に貼り付ける。過去にログ等へ露出した可能性のある招待は必要に応じて失効・再発行する。旧 URL の直接要求は Cloud Run 受信ログに残り得る。Cloud Logging と IAP、OAuth リダイレクト後の fragment 保持は実環境未検証。

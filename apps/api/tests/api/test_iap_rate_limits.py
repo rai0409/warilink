@@ -1,3 +1,5 @@
+import uuid
+
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -145,3 +147,80 @@ def test_missing_verified_subject_never_falls_back_to_ip(iap_client):
     with pytest.raises(ApiError) as error:
         security.rate_limit_keys(request_obj)
     assert error.value.status == 401 and error.value.code == "UNAUTHENTICATED"
+
+
+def invite_setup(iap_client):
+    c, private, settings = iap_client
+    settings.rate_limit_overrides = {}
+    a = signed(private, claims={"sub": "invite-subject-a"})
+    b = signed(private, claims={"sub": "invite-subject-b"})
+    h = {"X-WariLink-CSRF": "1", "X-Goog-IAP-JWT-Assertion": a, "Idempotency-Key": str(uuid.uuid4())}
+    assert request(c, a).status_code == 201
+    owner_cookies = dict(c.cookies)
+    g = c.post("/api/v1/groups", headers=h, json={"title": "invite", "my_name": "owner",
+               "other_member_names": ["guest"]}).json()
+    h["Idempotency-Key"] = str(uuid.uuid4())
+    inv = c.post(f"/api/v1/groups/{g['public_id']}/invites", headers=h, json={}).json()["token"]
+    c.cookies.clear()
+    assert request(c, b).status_code == 201
+    guest_cookies = dict(c.cookies)
+    return c, settings, a, b, owner_cookies, guest_cookies, g, inv
+
+
+def test_invite_http_subject_limits_and_auth(iap_client, caplog):
+    from sqlalchemy import text
+
+    c, settings, a, b, owner, guest, group, token = invite_setup(iap_client)
+    settings.rate_limit_overrides = {"invite_access:ip": (1, 600)}
+    def headers(jwt_value):
+        return {"X-WariLink-CSRF": "1", "X-Goog-IAP-JWT-Assertion": jwt_value}
+    c.cookies.clear()
+    c.cookies.update(guest)
+    preview = c.post("/api/v1/invites/preview", headers=headers(b), json={"token": token})
+    assert preview.status_code == 200
+    member = preview.json()["unclaimed_members"][0]["id"]
+    denied = c.post("/api/v1/invites/join", headers=headers(b), json={"token": token, "claim_member_id": member})
+    assert denied.status_code == 429 and denied.headers["retry-after"]
+    c.cookies.clear()
+    c.cookies.update(owner)
+    assert c.post("/api/v1/invites/preview", headers=headers(a), json={"token": token}).status_code == 200
+    settings.rate_limit_overrides = {}
+    c.cookies.clear()
+    c.cookies.update(guest)
+    missing = c.post("/api/v1/invites/join", headers={"X-WariLink-CSRF": "1"}, json={"token": token})
+    invalid = c.post("/api/v1/invites/join", headers=headers("invalid-jwt"), json={"token": token})
+    csrf = c.post("/api/v1/invites/join", headers={"X-Goog-IAP-JWT-Assertion": b}, json={"token": token})
+    assert (missing.status_code, invalid.status_code, csrf.status_code) == (401, 401, 403)
+    with Session(get_engine()) as db:
+        assert db.execute(text("SELECT uses FROM invitations")).scalar_one() == 0
+        assert db.execute(text("SELECT count(*) FROM memberships WHERE identity_id IS NOT NULL")).scalar_one() == 1
+    joined = c.post("/api/v1/invites/join", headers=headers(b), json={"token": token, "claim_member_id": member})
+    assert joined.status_code == 200 and joined.json()["public_id"] == group["public_id"]
+    for response in (preview, denied, missing, invalid, csrf, joined):
+        assert token not in response.text and a not in response.text and b not in response.text
+    with Session(get_engine()) as db:
+        for table in ("identities", "invitations", "memberships", "rate_limit_events", "audit_events"):
+            rows = str(db.execute(text(f"SELECT * FROM {table}")).all())
+            assert all(secret not in rows for secret in (a, b, token, "invite-subject-a", "invite-subject-b"))
+    assert all(secret not in caplog.text for secret in (a, b, token, "invite-subject-a", "invite-subject-b"))
+
+
+def test_invite_http_identity_token_and_miss_limits(iap_client):
+    c, settings, a, b, owner, guest, _, token = invite_setup(iap_client)
+    def preview(jwt_value, value):
+        return c.post("/api/v1/invites/preview", headers={"X-WariLink-CSRF": "1",
+                      "X-Goog-IAP-JWT-Assertion": jwt_value}, json={"token": value})
+    settings.rate_limit_overrides = {"invite_access:identity": (1, 600)}
+    assert preview(b, token).status_code == 200
+    assert preview(a, "different-token").status_code == 429  # same session, different subject
+    settings.rate_limit_overrides = {"invite_access:token": (2, 600)}
+    c.cookies.clear()
+    c.cookies.update(owner)
+    assert preview(a, token).status_code == 200
+    assert preview(a, token).status_code == 429
+    settings.rate_limit_overrides = {"invite_miss:ip": (1, 600)}
+    assert preview(a, "invalid-token").status_code == 404
+    assert preview(a, token).status_code == 429
+    c.cookies.clear()
+    c.cookies.update(guest)
+    assert preview(b, token).status_code == 200

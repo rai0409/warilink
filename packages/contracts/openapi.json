@@ -889,25 +889,24 @@
         }
       }
     },
-    "/api/v1/invites/{token}": {
-      "get": {
+    "/api/v1/invites/preview": {
+      "post": {
         "tags": [
           "groups"
         ],
         "summary": "Preview Invite",
         "description": "参加前の確認。グループ名と、まだ誰も紐付けていない名前だけを返す(金額は返さない)。",
-        "operationId": "preview_invite_api_v1_invites__token__get",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Token"
+        "operationId": "preview_invite_api_v1_invites_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteToken"
+              }
             }
-          }
-        ],
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -932,33 +931,22 @@
         }
       }
     },
-    "/api/v1/invites/{token}/join": {
+    "/api/v1/invites/join": {
       "post": {
         "tags": [
           "groups"
         ],
         "summary": "Join",
-        "operationId": "join_api_v1_invites__token__join_post",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Token"
-            }
-          }
-        ],
+        "operationId": "join_api_v1_invites_join_post",
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/JoinRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -4086,6 +4074,20 @@
         ],
         "title": "InviteStatusOut"
       },
+      "InviteToken": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "InviteToken"
+      },
       "IssueOut": {
         "properties": {
           "code": {
@@ -4212,6 +4214,11 @@
       },
       "JoinRequest": {
         "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 512,
+            "title": "Token"
+          },
           "claim_member_id": {
             "anyOf": [
               {
@@ -4238,6 +4245,9 @@
           }
         },
         "type": "object",
+        "required": [
+          "token"
+        ],
         "title": "JoinRequest"
       },
       "LoginVerifyIn": {

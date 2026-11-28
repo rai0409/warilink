@@ -19,10 +19,7 @@ Next.js が後段に付けるヘッダーと実際のプロキシ経路を含め
 
 Caddy の HTTP アクセスログは設定していません。Caddy のエラーログ、Next.js と
 FastAPI のログは別です。Cloud Run の自動リクエストログと IAP のログも別であり、
-この設定はそれらの内容を制御しません。`/join/[token]` と
-`/api/v1/invites/[token]` の URL が Cloud Logging に記録されないことは未検証です。
-実環境のログを調査し、必要なら招待 token の URL 配置変更を別工程で行うまで
-**Cloud Logging の秘密保護は BLOCKED** です。IAP と Cloud Run 自体も未検証です。
+この設定はそれらの内容を制御しません。新しい招待 URL は `/join#token=…`、API は固定 path と JSON 本文を使用します。旧 URL の直接要求は受信ログに記録され得るため、露出の可能性がある招待は必要に応じて失効・再発行してください。Cloud Logging、IAP と OAuth リダイレクト後の fragment 保持は実環境未検証です。**Cloud Logging の秘密保護は BLOCKED** です。
 
 ローカルの Caddy 2.10 系を `PATH` に置くか `CADDY_BINARY` に指定し、API の依存を
 用意して `cd apps/api && pytest tests/ops/test_cloudrun_ingress.py` を実行します。

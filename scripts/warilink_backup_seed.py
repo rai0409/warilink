@@ -58,9 +58,9 @@ def seed() -> dict:
     assert inv.status_code == 201, inv.text
     token = inv.json()["token"]
     member = client()
-    claim = next(m["id"] for m in member.get(f"/api/v1/invites/{token}").json()["unclaimed_members"]
+    claim = next(m["id"] for m in member.post("/api/v1/invites/preview", json={"token": token}).json()["unclaimed_members"]
                  if m["display_name"] == "Bさん")
-    j = member.post(f"/api/v1/invites/{token}/join", json={"claim_member_id": claim},
+    j = member.post("/api/v1/invites/join", json={"token": token, "claim_member_id": claim},
                     headers={"Idempotency-Key": str(uuid.uuid4())})
     assert j.status_code == 200, j.text
     state = os.environ.get("WARILINK_DRILL_STATE")
