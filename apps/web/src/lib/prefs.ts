@@ -1,3 +1,5 @@
+import { inviteToken } from "./invite";
+
 /** この端末だけに保存する設定(サーバーには送らない)。保存できない環境では何もしない */
 
 const NAME_KEY = "warilink.defaultName";
@@ -23,7 +25,13 @@ const inviteKey = (publicId: string) => `warilink.invite.${publicId}`;
 /** 作成者が発行した招待リンクを、この端末にだけ覚えておく(サーバーはハッシュしか持たないため) */
 export function loadInviteUrl(publicId: string): string | null {
   try {
-    return localStorage.getItem(inviteKey(publicId));
+    const stored = localStorage.getItem(inviteKey(publicId));
+    if (!stored) return null;
+    const token = inviteToken(stored);
+    if (!token) return null;
+    const url = `${location.origin}/join#token=${encodeURIComponent(token)}`;
+    if (url !== stored) localStorage.setItem(inviteKey(publicId), url);
+    return url;
   } catch {
     return null;
   }

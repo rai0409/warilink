@@ -95,7 +95,11 @@ class InvitePreview(BaseModel):
     unclaimed_members: list[MemberOut]
 
 
-class JoinRequest(BaseModel):
+class InviteToken(BaseModel):
+    token: str = Field(max_length=512, strict=True)
+
+
+class JoinRequest(InviteToken):
     claim_member_id: str | None = None
     new_member_name: Name | None = None
 
@@ -356,13 +360,13 @@ def _count_invite_miss(request: Request, e: ApiError) -> None:
         record_rate_event(request, "invite_miss")
 
 
-@router.get("/invites/{token}", response_model=InvitePreview)
-def preview_invite(token: str, request: Request, db: Session = Depends(get_db),
+@router.post("/invites/preview", response_model=InvitePreview)
+def preview_invite(body: InviteToken, request: Request, db: Session = Depends(get_db),
                    ident: Identity = Depends(current_identity)):
     """参加前の確認。グループ名と、まだ誰も紐付けていない名前だけを返す(金額は返さない)。"""
-    _invite_rate_limit(request, ident, token)
+    _invite_rate_limit(request, ident, body.token)
     try:
-        inv = _valid_invite(db, token)
+        inv = _valid_invite(db, body.token)
     except ApiError as e:
         _count_invite_miss(request, e)
         raise
@@ -376,13 +380,13 @@ def preview_invite(token: str, request: Request, db: Session = Depends(get_db),
     )
 
 
-@router.post("/invites/{token}/join", response_model=GroupOut)
-def join(token: str, body: JoinRequest, request: Request, db: Session = Depends(get_db),
+@router.post("/invites/join", response_model=GroupOut)
+def join(body: JoinRequest, request: Request, db: Session = Depends(get_db),
          ident: Identity = Depends(current_identity)):
     require_feature("groups")
-    _invite_rate_limit(request, ident, token)
+    _invite_rate_limit(request, ident, body.token)
     try:
-        return _join(token, body, db, ident)
+        return _join(body.token, body, db, ident)
     except ApiError as e:
         db.rollback()
         _count_invite_miss(request, e)

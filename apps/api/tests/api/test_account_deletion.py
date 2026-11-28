@@ -112,7 +112,8 @@ def test_registered_user_needs_fresh_step_up_and_everything_is_revoked(user_fact
     assert _scalar("SELECT count(*) FROM sessions s JOIN identities i ON i.id = s.identity_id "
                    "WHERE i.disabled_at IS NOT NULL AND s.revoked_at IS NULL") == 0
     other = user_factory()
-    assert other.get(f"/invites/{own_inv}").json()["code"] == "INVITE_INVALID"  # 本人が作った招待は失効
+    # 本人が作った招待は失効
+    assert other.post("/invites/preview", json={"token": own_inv}).json()["code"] == "INVITE_INVALID"
     # 別の端末から同じ Passkey でログインしようとしても使えない
     assert login(device(), auth).status_code == 400
     assert ACCOUNT not in json.dumps(_scalar("SELECT json_agg(a) FROM audit_events a"), ensure_ascii=False)
@@ -180,7 +181,7 @@ def test_owner_revokes_all_invites(user_factory):
     assert r.status_code == 200 and r.json()["revoked"] >= 2
     newcomer = user_factory()
     for t in tokens:
-        assert newcomer.get(f"/invites/{t}").json()["code"] == "INVITE_INVALID"
+        assert newcomer.post("/invites/preview", json={"token": t}).json()["code"] == "INVITE_INVALID"
     assert member.get(f"/groups/{pid}").status_code == 200  # 参加済みのメンバーはそのまま
     assert owner.post(f"/groups/{pid}/invites/revoke").json()["revoked"] == 0
 
@@ -242,7 +243,7 @@ def test_closed_group_is_read_only_and_revokes_invites(user_factory):
                 owner.post(f"/groups/{pid}/settlement-batches", json={"expected_ledger_version": v}),
                 owner.post(f"/groups/{pid}/close")):
         assert res.status_code == 409 and res.json()["code"] == "GROUP_CLOSED"
-    assert user_factory().get(f"/invites/{token}").json()["code"] == "INVITE_INVALID"
+    assert user_factory().post("/invites/preview", json={"token": token}).json()["code"] == "INVITE_INVALID"
     assert member.get(f"/groups/{pid}").json()["closed"] is True  # 閲覧はできる
     assert _ledger(owner, pid) == before
 
@@ -254,9 +255,9 @@ def test_last_member_leaving_orphans_group_and_join_cancels_it(user_factory):
     assert owner.post(f"/groups/{pid}/leave").status_code == 204
     assert _scalar("SELECT orphaned_at IS NOT NULL FROM groups WHERE public_id = :p", p=pid) is True
     newcomer = user_factory()
-    preview = newcomer.get(f"/invites/{token}").json()
+    preview = newcomer.post("/invites/preview", json={"token": token}).json()
     mid = next(m["id"] for m in preview["unclaimed_members"] if m["display_name"] == "Cさん")
-    assert newcomer.post(f"/invites/{token}/join", json={"claim_member_id": mid}).status_code == 200
+    assert newcomer.post("/invites/join", json={"token": token, "claim_member_id": mid}).status_code == 200
     assert _scalar("SELECT orphaned_at IS NULL FROM groups WHERE public_id = :p", p=pid) is True
 
 

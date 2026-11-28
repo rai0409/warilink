@@ -163,14 +163,15 @@ def test_invite_guessing_is_limited_without_revealing_valid_tokens(limits, clock
     c = browser()
     assert guest(c).status_code == 201
     for i in range(3):
-        assert c.get(f"{API}/invites/not-a-token-{i}").json()["code"] == "INVITE_INVALID"
+        assert c.post(f"{API}/invites/preview", json={"token": f"not-a-token-{i}"}).json()["code"] == "INVITE_INVALID"
     # 上限に達した後は、正しい token でも存在しない token でも同じ 429(token の有無が分からない)
-    valid, invalid = c.get(f"{API}/invites/{token}"), c.get(f"{API}/invites/still-not-a-token")
+    valid = c.post(f"{API}/invites/preview", json={"token": token})
+    invalid = c.post(f"{API}/invites/preview", json={"token": "still-not-a-token"})
     assert valid.status_code == invalid.status_code == 429
     assert valid.json()["code"] == invalid.json()["code"] == "RATE_LIMITED"
     other = browser("198.51.100.7")
     assert guest(other).status_code == 201
-    assert other.get(f"{API}/invites/{token}").status_code == 200
+    assert other.post(f"{API}/invites/preview", json={"token": token}).status_code == 200
 
 
 def test_invite_access_is_limited_per_identity_and_per_token(limits, clock, user_factory):
@@ -180,20 +181,20 @@ def test_invite_access_is_limited_per_identity_and_per_token(limits, clock, user
     limits(invite_access__identity=(2, 600), invite_access__token=(4, 600))
     c = browser("192.0.2.1")
     assert guest(c).status_code == 201
-    assert c.get(f"{API}/invites/{token}").status_code == 200
-    assert c.get(f"{API}/invites/{token}").status_code == 200
+    assert c.post(f"{API}/invites/preview", json={"token": token}).status_code == 200
+    assert c.post(f"{API}/invites/preview", json={"token": token}).status_code == 200
     # 同じ本人は IP を変えても止まる(Cookie を移す)
     moved = browser("192.0.2.2")
     moved.cookies = c.cookies
-    assert moved.get(f"{API}/invites/{token}").status_code == 429
+    assert moved.post(f"{API}/invites/preview", json={"token": token}).status_code == 429
     # 1 つの token には、別の人・別の IP からでも全体で 4 回まで
     for ip in ("192.0.2.3", "192.0.2.4"):
         x = browser(ip)
         assert guest(x).status_code == 201
-        assert x.get(f"{API}/invites/{token}").status_code == 200
+        assert x.post(f"{API}/invites/preview", json={"token": token}).status_code == 200
     y = browser("192.0.2.5")
     assert guest(y).status_code == 201
-    assert y.get(f"{API}/invites/{token}").status_code == 429
+    assert y.post(f"{API}/invites/preview", json={"token": token}).status_code == 429
 
 
 def test_join_rejection_leaves_membership_unchanged(limits, clock, user_factory):
@@ -203,8 +204,8 @@ def test_join_rejection_leaves_membership_unchanged(limits, clock, user_factory)
     limits(invite_access__ip=(1, 600))
     c = browser()
     assert guest(c).status_code == 201
-    assert c.get(f"{API}/invites/{token}").status_code == 200
-    r = c.post(f"{API}/invites/{token}/join", json={"claim_member_id": ids["Bさん"]},
+    assert c.post(f"{API}/invites/preview", json={"token": token}).status_code == 200
+    r = c.post(f"{API}/invites/join", json={"token": token, "claim_member_id": ids["Bさん"]},
                headers={"Idempotency-Key": "7d0a5d0e-0000-4000-8000-000000000001"})
     assert r.status_code == 429
     members = owner.get(f"/groups/{g['public_id']}").json()["members"]

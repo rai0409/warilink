@@ -31,6 +31,16 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def private_headers(request: Request, call_next):
+        async def call_safely():
+            try:
+                return await call_next(request)
+            except Exception:
+                if not request.url.path.startswith(f"{API_PREFIX}/invites/"):
+                    raise
+                # 例外には入力本文が含まれる場合があるため、本文や例外文字列を記録しない。
+                errors.invite_failure_log(request)
+                return errors._problem(request, 500, "INTERNAL_ERROR", "処理に失敗しました")
+
         health = request.method == "GET" and request.url.path == f"{API_PREFIX}/health"
         if s.rate_limit_source == "iap" and not health:
             assertions = request.headers.getlist("x-goog-iap-jwt-assertion")
@@ -41,18 +51,20 @@ def create_app() -> FastAPI:
                     request.state.iap_subject = await anyio.to_thread.run_sync(
                         iap.verify_assertion, assertions[0], s.iap_audience or ""
                     )
-                    response = await call_next(request)
+                    response = await call_safely()
                 except iap.InvalidAssertion:
                     response = errors._problem(request, 401, "UNAUTHENTICATED", "認証を確認できませんでした")
                 except iap.IapUnavailable:
                     response = errors._problem(request, 503, "IAP_UNAVAILABLE",
                                                "認証を確認できません。時間をおいて再試行してください")
         else:
-            response = await call_next(request)
+            response = await call_safely()
         # グループ・支出・精算は非公開。検索エンジン・共有キャッシュに載せない。
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        if request.url.path.startswith(f"{API_PREFIX}/invites/"):
+            response.headers["Referrer-Policy"] = "no-referrer"
         return response
 
     errors.install(app)

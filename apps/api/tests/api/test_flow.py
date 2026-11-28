@@ -234,13 +234,13 @@ def test_invite_claim_race_and_expiry(user_factory):
     results = []
 
     def go(u):
-        results.append((u, u.post(f"/invites/{inv['token']}/join", json={"claim_member_id": ids["Cさん"]})))
+        results.append((u, u.post("/invites/join", json={"token": inv['token'], "claim_member_id": ids["Cさん"]})))
 
     threads = [threading.Thread(target=go, args=(u,)) for u in users]
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert sorted(r.status_code for _, r in results) == [200, 409, 409, 409, 409]
-    assert users[0].get("/invites/not-a-real-token").status_code == 404
+    assert users[0].post("/invites/preview", json={"token": "not-a-real-token"}).status_code == 404
     # 招待URL発行はオーナーのみ
     joined = next(u for u, r in results if r.status_code == 200)
     assert joined.post(f"/groups/{pid}/invites", json={}).status_code == 403
@@ -353,7 +353,7 @@ def test_permission_matrix_owner_member_outsider_anonymous(user_factory):
     assert owner.get(f"/groups/{pid}/expenses/{eid}").json()["amount_minor"] == 1200
     # 他グループの名前行を招待で横取りできない
     inv2 = outsider.post(f"/groups/{g2['public_id']}/invites", json={}).json()
-    r = member.post(f"/invites/{inv2['token']}/join", json={"claim_member_id": ids["Cさん"]})
+    r = member.post("/invites/join", json={"token": inv2['token'], "claim_member_id": ids["Cさん"]})
     assert r.status_code == 409
 
 
@@ -369,12 +369,12 @@ def test_invite_expired_exhausted_and_revoked_are_rejected(user_factory):
     pid = g["public_id"]
     one = a.post(f"/groups/{pid}/invites", json={"max_uses": 1}).json()
     u1, u2 = user_factory(), user_factory()
-    assert u1.post(f"/invites/{one['token']}/join", json={"claim_member_id": ids["Bさん"]}).status_code == 200
+    assert u1.post("/invites/join", json={"token": one['token'], "claim_member_id": ids["Bさん"]}).status_code == 200
     # 同じ人の再参加は冪等(回数を消費しない)、別の人は回数切れで 404
-    assert u1.post(f"/invites/{one['token']}/join", json={"claim_member_id": ids["Bさん"]}).status_code == 200
-    r = u2.post(f"/invites/{one['token']}/join", json={"claim_member_id": ids["Cさん"]})
+    assert u1.post("/invites/join", json={"token": one['token'], "claim_member_id": ids["Bさん"]}).status_code == 200
+    r = u2.post("/invites/join", json={"token": one['token'], "claim_member_id": ids["Cさん"]})
     assert r.status_code == 404 and r.json()["code"] == "INVITE_INVALID"
-    assert u2.get(f"/invites/{one['token']}").status_code == 404
+    assert u2.post("/invites/preview", json={"token": one['token']}).status_code == 404
 
     expired = a.post(f"/groups/{pid}/invites", json={}).json()
     revoked = a.post(f"/groups/{pid}/invites", json={}).json()
@@ -384,8 +384,8 @@ def test_invite_expired_exhausted_and_revoked_are_rejected(user_factory):
         conn.execute(sa_update(Invitation).where(Invitation.token_hash == hash_token(revoked["token"]))
                      .values(revoked_at=func_now_minus_minute()))
     for tok in (expired["token"], revoked["token"]):
-        assert u2.get(f"/invites/{tok}").status_code == 404
-        assert u2.post(f"/invites/{tok}/join", json={"claim_member_id": ids["Cさん"]}).status_code == 404
+        assert u2.post("/invites/preview", json={"token": tok}).status_code == 404
+        assert u2.post("/invites/join", json={"token": tok, "claim_member_id": ids["Cさん"]}).status_code == 404
     assert u2.get(f"/groups/{pid}").status_code == 404
     # 発行の上限値を超える指定は 422
     assert a.post(f"/groups/{pid}/invites", json={"max_uses": 501}).status_code == 422

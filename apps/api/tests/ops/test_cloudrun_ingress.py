@@ -138,13 +138,14 @@ def test_cloudrun_configuration_and_vm_untouched():
 
 def test_headers_and_untrusted_forwarding(ingress):
     port, _, _ = ingress
-    status, headers, body = request(port, "GET", "/api/v1/invites/example-test-token", headers={
+    status, headers, body = request(port, "POST", "/api/v1/invites/preview",
+                                    body=b'{"token":"example-test-token"}', headers={
         "X-Forwarded-For": "198.51.100.11, 203.0.113.22",
         "X-Real-IP": "198.51.100.33",
         "Forwarded": "for=198.51.100.44",
     })
     assert status == 200
-    assert json.loads(body)["path"] == "/api/v1/invites/example-test-token"
+    assert json.loads(body)["path"] == "/api/v1/invites/preview"
     upstream_headers = {k.lower(): v for k, v in json.loads(body)["headers"].items()}
     assert "x-forwarded-for" not in upstream_headers
     assert "x-real-ip" not in upstream_headers
@@ -175,7 +176,7 @@ def test_request_size_boundary(ingress, size, expected):
 def test_access_log_is_disabled(ingress):
     port, _, path = ingress
     token = "example-local-token-never-real"
-    assert request(port, "GET", f"/join/{token}")[0] == 200
+    assert request(port, "POST", "/api/v1/invites/preview", body=('{"token":"' + token + '"}').encode())[0] == 200
     assert token not in path.read_text()
 
 
